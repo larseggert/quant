@@ -174,7 +174,7 @@ void qlog_transport(const qlog_pkt_evt_t evt,
         prev_frame = fprintf(c->qlog,
                              "%s{\"frame_type\":\"stream\",\"stream_id\":%" PRId
                              ",\"length\":%u,\"offset\":%" PRIu,
-                             prev_frame ? "," : "", m->strm->id,
+                             /* prev_frame ? "," : */ "", m->strm->id,
                              m->strm_data_len, m->strm_off);
         if (m->is_fin)
             fputs(",\"fin\":true", c->qlog);
@@ -243,8 +243,9 @@ void qlog_recovery(const qlog_rec_evt_t evt,
 
     int prev_metric = 0;
     if (c->rec.cur.in_flight != c->rec.prev.in_flight)
-        prev_metric = fprintf(c->qlog, "%s\"bytes_in_flight\":%" PRIu,
-                              prev_metric ? "," : "", c->rec.cur.in_flight);
+        prev_metric =
+            fprintf(c->qlog, "%s\"bytes_in_flight\":%" PRIu,
+                    /* prev_metric ? "," : */ "", c->rec.cur.in_flight);
     if (c->rec.cur.cwnd != c->rec.prev.cwnd)
         prev_metric = fprintf(c->qlog, "%s\"cwnd\":%" PRIu,
                               prev_metric ? "," : "", c->rec.cur.cwnd);

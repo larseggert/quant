@@ -599,7 +599,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
 #endif
             if (l != SRT_LEN) {
                 err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                          "illegal srt len %u", l);
+                          "illegal srt len %" PRIu64, l);
                 return 1;
             }
             decb(srt, &pos, end, SRT_LEN);
@@ -655,7 +655,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
 
         default:
             err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                      "unsupported tp 0x%04x", tp);
+                      "unsupported tp 0x%04" PRIx64, tp);
             return 1;
         }
     }
@@ -1353,7 +1353,8 @@ static void read_tickets(const struct q_conf * const conf)
     if (fread(&hash_len, sizeof(quant_commit_hash_len), 1, fp) != 1)
         goto done;
     uint8_t buf[8192];
-    if (fread(buf, sizeof(uint8_t), hash_len, fp) != hash_len)
+    if (fread(buf, sizeof(uint8_t), hash_len, fp) !=
+        MIN(quant_commit_hash_len, hash_len))
         goto done;
     if (hash_len != quant_commit_hash_len ||
         memcmp(buf, quant_commit_hash, hash_len) != 0) {
@@ -1385,6 +1386,7 @@ static void read_tickets(const struct q_conf * const conf)
         ensure(t->alpn, "calloc");
         if (fread(t->alpn, sizeof(*t->alpn), len, fp) != len)
             goto abort;
+        t->alpn[len - 1] = 0;
 
         if (fread(&t->tp, sizeof(t->tp), 1, fp) != 1)
             goto abort;

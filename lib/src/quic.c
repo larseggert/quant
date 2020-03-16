@@ -728,6 +728,7 @@ void q_close(struct q_conn * const c,
 #ifndef NO_ERR_REASONS
     if (reason) {
         strncpy(c->err_reason, reason, MAX_ERR_REASON_LEN);
+        c->err_reason[MAX_ERR_REASON_LEN - 1] = 0;
         c->err_reason_len = (uint8_t)strnlen(reason, MAX_ERR_REASON_LEN);
     }
 #endif

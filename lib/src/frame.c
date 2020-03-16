@@ -608,15 +608,15 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
 
             struct pkt_meta * m_acked;
             struct w_iov * const acked = find_sent_pkt(pn, ack, &m_acked);
-            if (unlikely(acked == 0)) {
+            if (unlikely(acked == 0))
 #ifndef FUZZING
                 // this is just way too noisy when fuzzing
                 err_close_return(c, ERR_PROTOCOL_VIOLATION, type,
                                  "got ACK for %s pkt %" PRIu " never sent",
                                  pn_type_str(pn->type), ack);
-#endif
+#else
                 goto next_ack;
-            }
+#endif
 
             got_new_ack = true;
             if (unlikely(ack == lg_ack_in_frm)) {
@@ -1037,8 +1037,8 @@ dec_new_cid_frame(const uint8_t ** pos,
                          dcid.seq, splay_count(&c->dcids_by_seq), max_act_cids);
 
     if (unlikely(dcid.rpt > dcid.seq))
-        err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID, "illegal rpt %u",
-                         dcid.rpt);
+        err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID,
+                         "illegal rpt %" PRIu, dcid.rpt);
 
     if (unlikely(dcid.len > CID_LEN_MAX))
         err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID, "illegal len %u",
