@@ -559,8 +559,9 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
                              ack_rng);
 
         if (unlikely(ack_rng > lg_ack))
-            err_close_return(c, ERR_FRAME_ENC, type, "ACK rng len %" PRIu,
-                             " > lg_ack %" PRIu, ack_rng, lg_ack);
+            err_close_return(c, ERR_FRAME_ENC, type,
+                             "ACK rng len %" PRIu " > lg_ack %" PRIu, ack_rng,
+                             lg_ack);
 
 #ifndef NDEBUG
         if (ack_rng == 0) {
@@ -1032,8 +1033,8 @@ dec_new_cid_frame(const uint8_t ** pos,
     if (likely(dup == false) &&
         unlikely(splay_count(&c->dcids_by_seq) > max_act_cids))
         err_close_return(c, ERR_CONNECTION_ID_LIMIT, FRM_CID,
-                         "illegal seq %u (have %" PRIu "/%" PRIu ")", dcid.seq,
-                         splay_count(&c->dcids_by_seq), max_act_cids);
+                         "illegal seq %" PRIu " (have %" PRIu "/%" PRIu ")",
+                         dcid.seq, splay_count(&c->dcids_by_seq), max_act_cids);
 
     if (unlikely(dcid.rpt > dcid.seq))
         err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID, "illegal rpt %u",
@@ -1350,7 +1351,7 @@ bool dec_frames(struct q_conn * const c,
         default:
             err_close_return(c, ERR_FRAME_ENC, type,
                              "unknown 0x%02x frame at pos %u", type,
-                             pos - v->buf);
+                             (uint16_t)(pos - v->buf));
         }
 
         if (unlikely(ok == false))

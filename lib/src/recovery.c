@@ -287,11 +287,9 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
     // if we lost connection or stream control frames, possibly RTX them
     qlog_recovery(rec_pl, "unknown", c, m);
 
-    // static const struct frames conn_ctrl =
-    //     bitset_t_initializer(1 << FRM_TOK | 1 << FRM_CDB | 1 << FRM_SBB |
-    //                          1 << FRM_SBU | 1 << FRM_CID | 1 << FRM_RTR);
     static const struct frames all_ctrl = bitset_t_initializer(
-        1 << FRM_RST | 1 << FRM_STP | 1 << FRM_TOK | 1 << FRM_CDB |
+        1 << FRM_RST | 1 << FRM_STP | 1 << FRM_TOK | 1 << FRM_MCD |
+        1 << FRM_MSD | 1 << FRM_MSB | 1 << FRM_MSU | 1 << FRM_CDB |
         1 << FRM_SDB | 1 << FRM_SBB | 1 << FRM_SBU | 1 << FRM_CID |
         1 << FRM_RTR | 1 << FRM_HSD);
     if (bit_overlap(FRM_MAX, &all_ctrl, &m->frms))
@@ -641,7 +639,8 @@ on_pkt_acked_cc(const struct pkt_meta * const m)
     if (c->rec.cur.cwnd < c->rec.cur.ssthresh)
         c->rec.cur.cwnd += m->udp_len;
     else
-        c->rec.cur.cwnd += (c->rec.max_pkt_size * m->udp_len) / c->rec.cur.cwnd;
+        c->rec.cur.cwnd +=
+            (c->rec.max_pkt_size * (uint_t)m->udp_len) / c->rec.cur.cwnd;
 
 #ifndef NO_QINFO
     c->i.max_cwnd = MAX(c->i.max_cwnd, c->rec.cur.cwnd);

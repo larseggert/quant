@@ -47,7 +47,6 @@
 #include <openssl/evp.h>
 #include <openssl/ossl_typ.h>
 #include <openssl/pem.h>
-#include <openssl/x509.h>
 #include <picotls/openssl.h>
 
 #define cipher_suite ptls_openssl_cipher_suites
@@ -459,7 +458,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
         // check if this transport parameter is a duplicate
         if (bit_isset(TP_MAX, tp, &tp_list)) {
             err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                      "duplicate tp 0x%04x", tp);
+                      "duplicate tp 0x%04lx", tp);
             return 1;
         }
         bit_set(TP_MAX, tp, &tp_list);
@@ -1622,8 +1621,7 @@ void free_tls_ctx(struct per_engine_data * const ped)
 
 #ifdef WITH_OPENSSL
     ptls_openssl_dispose_sign_certificate(&ped->sign_cert);
-    X509_STORE_free(ped->verify_cert.cert_store);
-    // FIXME: ptls_openssl_dispose_verify_certificate(&ped->verify_cert) frees!
+    ptls_openssl_dispose_verify_certificate(&ped->verify_cert);
 #endif
 }
 
