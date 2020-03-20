@@ -48,7 +48,7 @@ declare -A servers=(
     [quiche]="quic.tech|-3|8443|8444|8443|/128KB.png"
     # [quicker]="quicker.edm.uhasselt.be||4433|4434|4433|/index.html"
     [quicly]="quic.examp1e.net||4433|4434|443|/40000"
-    [quinn]="ralith.com||4433|4434|4433|/100K"
+    [quinn]="h3.stammw.eu||4433|4434|443|/100K"
     [winquic]="quic.westus.cloudapp.azure.com||4433|4434|443|/draft-ietf-quic-http-11.txt"
     # [local]="localhost||4433|4434|4433|/40000"
 )

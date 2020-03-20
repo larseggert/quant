@@ -33,7 +33,7 @@ if [ "$ROLE" == "client" ]; then
     "versionnegotiation")
         CLIENT_ARGS="-e 12345678 $CLIENT_ARGS"
         ;;
-    "resumption")
+    "resumption"|"zerortt")
         REQS=($REQUESTS)
         REQUESTS=${REQS[0]}
         /usr/local/bin/client $CLIENT_ARGS $REQUESTS 2>&1 | \
