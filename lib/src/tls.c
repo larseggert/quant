@@ -25,7 +25,6 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#include <assert.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -294,10 +293,9 @@ Exit:
 }
 
 
-// from quicly (with mods to the setup_initial_key call)
+// from quicly (with mods)
 static int setup_initial_encryption(struct st_quicly_cipher_context_t * ingress,
                                     struct st_quicly_cipher_context_t * egress,
-                                    ptls_cipher_suite_t ** cipher_suites,
                                     ptls_iovec_t cid,
                                     int is_client)
 {
@@ -305,28 +303,20 @@ static int setup_initial_encryption(struct st_quicly_cipher_context_t * ingress,
                                    0x5a, 0x11, 0xa7, 0xd2, 0x43, 0x2b, 0xb4,
                                    0x63, 0x65, 0xbe, 0xf9, 0xf5, 0x02};
     static const char * labels[2] = {"client in", "server in"};
-    ptls_cipher_suite_t ** cs;
+    ptls_cipher_suite_t * const cs = &aes128gcmsha256;
     uint8_t secret[PTLS_MAX_DIGEST_SIZE];
     int ret;
 
-    /* find aes128gcm cipher */
-    for (cs = cipher_suites;; ++cs) {
-        assert(cs != NULL);
-        if ((*cs)->id == PTLS_CIPHER_SUITE_AES_128_GCM_SHA256)
-            break;
-    }
-
     /* extract master secret */
-    if ((ret = ptls_hkdf_extract((*cs)->hash, secret,
-                                 ptls_iovec_init(salt, sizeof(salt)), cid)) !=
-        0)
+    if ((ret = ptls_hkdf_extract(
+             cs->hash, secret, ptls_iovec_init(salt, sizeof(salt)), cid)) != 0)
         goto Exit;
 
     /* create aead contexts */
-    if ((ret = setup_initial_key(ingress, *cs, secret, labels[is_client], 0,
+    if ((ret = setup_initial_key(ingress, cs, secret, labels[is_client], 0,
                                  0)) != 0)
         goto Exit;
-    if ((ret = setup_initial_key(egress, *cs, secret, labels[!is_client], 1,
+    if ((ret = setup_initial_key(egress, cs, secret, labels[!is_client], 1,
                                  0)) != 0)
         goto Exit;
 
@@ -628,7 +618,11 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             decb((uint8_t *)&pa6->addr.ip6, &pos, e, sizeof(pa6->addr.ip6));
             decb((uint8_t *)&pa6->port, &pos, e, sizeof(pa6->port));
 
-            dec1(&pa->cid.len, &pos, e);
+            if (unlikely(dec1(&pa->cid.len, &pos, e) == false)) {
+                err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
+                          "cannot decode tp 0x%04" PRIx64, tp);
+                return 1;
+            }
             decb(pa->cid.id, &pos, e, pa->cid.len);
             pa->cid.seq = 1;
 
@@ -1236,10 +1230,8 @@ void init_prot(struct q_conn * const c)
     const ptls_iovec_t cid = {
         .base = (uint8_t *)(is_clnt(c) ? &dcid->id : &scid->id),
         .len = is_clnt(c) ? dcid->len : scid->len};
-    ptls_cipher_suite_t * cs = &aes128gcmsha256;
     struct pn_space * const pn = &c->pns[pn_init];
-    setup_initial_encryption(&pn->early.in, &pn->early.out, &cs, cid,
-                             is_clnt(c));
+    setup_initial_encryption(&pn->early.in, &pn->early.out, cid, is_clnt(c));
 }
 
 
@@ -1352,12 +1344,13 @@ static void read_tickets(const struct q_conf * const conf)
     size_t hash_len;
     if (fread(&hash_len, sizeof(quant_commit_hash_len), 1, fp) != 1)
         goto done;
+    if (hash_len != quant_commit_hash_len)
+        goto remove;
     uint8_t buf[8192];
-    if (fread(buf, sizeof(uint8_t), hash_len, fp) !=
-        MIN(quant_commit_hash_len, hash_len))
-        goto done;
-    if (hash_len != quant_commit_hash_len ||
-        memcmp(buf, quant_commit_hash, hash_len) != 0) {
+    if (fread(buf, sizeof(uint8_t), hash_len, fp) != hash_len)
+        goto remove;
+    if (memcmp(buf, quant_commit_hash, hash_len) != 0) {
+    remove:
         warn(WRN, "TLS tickets were stored by different %s version, removing",
              quant_name);
         ensure(unlink(conf->ticket_store) == 0, "unlink");
@@ -1378,6 +1371,7 @@ static void read_tickets(const struct q_conf * const conf)
         ensure(t->sni, "calloc");
         if (fread(t->sni, sizeof(*t->sni), len, fp) != len)
             goto abort;
+        t->sni[len - 1] = 0;
 
         if (fread(&len, sizeof(len), 1, fp) != 1)
             goto abort;

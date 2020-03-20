@@ -101,7 +101,7 @@ struct cb_data {
 };
 
 
-static bool send_err(const struct cb_data * const d, const uint16_t code)
+static bool send_err(struct cb_data * const d, const uint16_t code)
 {
     const char * msg;
     bool close = false;
@@ -125,9 +125,10 @@ static bool send_err(const struct cb_data * const d, const uint16_t code)
         msg = "500 Internal Server Error";
     }
 
-    if (close)
+    if (close && d->c) {
         q_close(d->c, 0x0003, msg);
-    else
+        d->c = 0;
+    } else
         q_write_str(d->w, d->s, msg, strlen(msg), true);
     return close;
 }
@@ -141,7 +142,7 @@ static uint32_t bench_cnt = 0;
 static int serve_cb(http_parser * parser, const char * at, size_t len)
 {
     (void)parser;
-    const struct cb_data * const d = parser->data;
+    struct cb_data * const d = parser->data;
     char cid_str[64];
     q_cid(d->c, cid_str, sizeof(cid_str));
     warn(INF, "conn %s str %" PRId " serving URL %.*s", cid_str, q_sid(d->s),
