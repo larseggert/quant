@@ -32,12 +32,12 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
-#if !defined(PARTICLE) && !defined(RIOT_VERSION)
-#include <netinet/ip.h>
-#endif
-
 #ifdef __FreeBSD__
 #include <netinet/in.h>
+#endif
+
+#if !defined(PARTICLE) && !defined(RIOT_VERSION)
+#include <netinet/ip.h>
 #endif
 
 #include <picotls.h>

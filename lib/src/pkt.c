@@ -30,12 +30,12 @@
 #include <string.h>
 #include <sys/param.h>
 
-#if !defined(PARTICLE) && !defined(RIOT_VERSION)
-#include <netinet/ip.h>
-#endif
-
 #ifdef __FreeBSD__
 #include <netinet/in.h>
+#endif
+
+#if !defined(PARTICLE) && !defined(RIOT_VERSION)
+#include <netinet/ip.h>
 #endif
 
 #include <picotls.h>
