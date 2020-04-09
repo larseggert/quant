@@ -373,6 +373,7 @@ int main(int argc, char * argv[])
         struct q_conn * c;
         const bool have_active =
             q_ready(w, first_conn ? 0 : timeout * NS_PER_S, &c);
+        // warn(ERR, "%u %u", first_conn, have_active);
         if (c == 0) {
             if (have_active == false && timeout)
                 break;

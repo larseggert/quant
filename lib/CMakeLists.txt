@@ -49,6 +49,7 @@ add_library(common
   OBJECT
     src/pkt.c src/frame.c src/quic.c src/stream.c src/conn.c src/pn.c src/qlog.c
     src/diet.c src/util.c src/tls.c src/recovery.c src/marshall.c src/loop.c
+    src/cid.c
 )
 
 set(TARGETS common lib${PROJECT_NAME} ${WARP})

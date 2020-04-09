@@ -44,6 +44,7 @@
 #include <warpcore/warpcore.h>
 
 #include "bitset.h"
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "frame.h"
@@ -369,16 +370,15 @@ enc_other_frames(
     }
 
     if (c->tx_retire_cid && can_enc(pos, end, m, FRM_RTR, true)) {
-        struct cid * rcid = splay_min(cids_by_seq, &c->dcids_by_seq);
-        while (rcid && rcid->seq < c->dcid->seq) {
-            struct cid * const next =
-                splay_next(cids_by_seq, &c->dcids_by_seq, rcid);
-            if (rcid->retired) {
-                enc_retire_cid_frame(ci, pos, end, m, rcid);
-                free_dcid(c, rcid);
+        struct cid * id = 0;
+        struct cid * tmp = 0;
+        sl_foreach_safe (id, &c->dcids.ret, next, tmp)
+            if (id->seq < c->dcid->seq) {
+                enc_retire_cid_frame(ci, pos, end, m, id);
+                if (id->has_srt)
+                    conns_by_srt_del(id->srt);
+                cid_del(&c->dcids, id);
             }
-            rcid = next;
-        }
     }
 
     if (c->tx_path_chlg && can_enc(pos, end, m, FRM_PCL, true))
@@ -386,7 +386,7 @@ enc_other_frames(
 
     while (c->tx_ncid && can_enc(pos, end, m, FRM_CID, false)) {
         enc_new_cid_frame(ci, pos, end, m);
-        c->tx_ncid = needs_more_ncids(c);
+        c->tx_ncid = need_more_cids(&c->scids, c->tp_peer.act_cid_lim);
     }
 #endif
 

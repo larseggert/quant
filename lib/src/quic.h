@@ -50,6 +50,7 @@
 #define ASAN_UNPOISON_MEMORY_REGION(x, y)
 #endif
 
+#include "cid.h"
 #include "frame.h"
 #include "tree.h" // IWYU pragma: keep
 
@@ -68,8 +69,6 @@ struct q_conn; // IWYU pragma: no_forward_declare q_conn
 
 #define DATA_OFFSET 48 ///< Offsets of stream frame payload data we TX.
 
-#define CID_LEN_MAX 20  ///< Maximum CID length allowed by spec.
-#define SRT_LEN 16      ///< Stateless reset token length allowed by spec.
 #define PATH_CHLG_LEN 8 ///< Length of a path challenge.
 #define MAX_TOK_LEN 166
 #define AEAD_LEN 16
@@ -108,29 +107,6 @@ struct q_conn; // IWYU pragma: no_forward_declare q_conn
 #define FMT_PNR_IN BLU "%" PRIu NRM
 #define FMT_PNR_OUT GRN "%" PRIu NRM
 #define FMT_SID BLD YEL "%" PRId NRM
-
-
-struct cid {
-#ifndef NO_MIGRATION
-    splay_entry(cid) node_seq;
-#endif
-    uint_t seq; ///< Connection ID sequence number
-    /// XXX len must precede id for cid_cmp() over both to work
-    uint8_t len; ///< Connection ID length
-    /// XXX id must precede srt for rand_bytes() over both to work
-    uint8_t id[CID_LEN_MAX]; ///< Connection ID
-#ifndef NO_SRT_MATCHING
-    uint8_t srt[SRT_LEN]; ///< Stateless Reset Token
-    uint8_t has_srt : 1;  ///< Is the SRT field valid?
-#endif
-    uint8_t retired : 1; ///< Did we retire this CID?
-#ifndef NO_SRT_MATCHING
-    uint8_t : 6;
-#else
-    uint8_t : 7;
-#endif
-    uint8_t _unused[2];
-};
 
 
 struct pkt_hdr {
@@ -318,25 +294,9 @@ hex2str(const uint8_t * const src,
         const size_t len_dst);
 
 
-extern const char * __attribute__((nonnull(2)))
-cid2str(const struct cid * const cid, char * const dst, const size_t len_dst);
-
-
-#define hex_str_len(x) ((x)*2 + 1)
-
-#define CID_STR_LEN hex_str_len(2 * sizeof(uint_t) + CID_LEN_MAX + 1)
-
-extern char __cid_str[CID_STR_LEN];
 extern char __srt_str[hex_str_len(SRT_LEN)];
 extern char __tok_str[hex_str_len(MAX_TOK_LEN)];
 extern char __rit_str[hex_str_len(RIT_LEN)];
-
-#define cid_str(cid) cid2str((cid), __cid_str, sizeof(__cid_str))
-
-#define mk_cid_str(lvl, cid, str)                                              \
-    char str[DLEVEL >= (lvl) ? CID_STR_LEN : 1] = "";                          \
-    if (DLEVEL >= (lvl) && likely(cid))                                        \
-        cid2str((cid), str, sizeof(str));
 
 #define srt_str(srt) hex2str((srt), SRT_LEN, __srt_str, sizeof(__srt_str))
 
@@ -373,18 +333,6 @@ extern char __rit_str[hex_str_len(RIT_LEN)];
 #define poison_scratch(s, l)
 #define unpoison_scratch(s, l)
 #endif
-
-extern void __attribute__((nonnull))
-mk_rand_cid(struct cid * const cid, const uint8_t len, const bool srt);
-
-
-static inline void __attribute__((nonnull))
-cid_cpy(struct cid * const dst, const struct cid * const src)
-{
-    memcpy((uint8_t *)dst + offsetof(struct cid, seq),
-           (const uint8_t *)src + offsetof(struct cid, seq),
-           sizeof(struct cid) - offsetof(struct cid, seq));
-}
 
 
 static inline void __attribute__((nonnull))

@@ -33,6 +33,7 @@
 
 #include <warpcore/warpcore.h>
 
+#include "cid.h"
 #include "conn.h"
 #include "quic.h"
 #include "tls.h"

@@ -29,7 +29,6 @@
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 
@@ -60,7 +59,6 @@
 #include "tree.h"
 
 
-char __cid_str[CID_STR_LEN];
 char __srt_str[hex_str_len(SRT_LEN)];
 char __tok_str[hex_str_len(MAX_TOK_LEN)];
 char __rit_str[hex_str_len(RIT_LEN)];
@@ -991,16 +989,22 @@ bool q_ready(struct w_engine * const w,
     struct q_conn * const c = sl_first(&c_ready);
     if (c) {
         bool remove = true;
+#ifndef NDEBUG
         char * op = "rx";
+#endif
 #ifndef NO_SERVER
         if (c->needs_accept) {
+#ifndef NDEBUG
             op = "accept";
+#endif
             remove = c->have_new_data == false;
         } else
 #endif
+#ifndef NDEBUG
             if (c->state == conn_clsd)
             op = "close";
         warn(WRN, "%s conn %s ready to %s", conn_type(c), cid_str(c->scid), op);
+#endif
         if (remove) {
             sl_remove_head(&c_ready, node_rx_ext);
             c->in_c_ready = false;
@@ -1084,7 +1088,7 @@ void q_migrate(struct q_conn * const c,
         }
 
         // make sure we have a dcid to migrate to
-        if (splay_next(cids_by_seq, &c->dcids_by_seq, c->dcid) == 0)
+        if (next_cid(&c->dcids, c->dcid->seq) == 0)
             goto fail;
     }
 
@@ -1126,7 +1130,7 @@ void q_migrate(struct q_conn * const c,
          old_ip, old_af == AF_INET6 ? "]" : "", old_port,
          c->sock->ws_laddr.af == AF_INET6 ? "[" : "",
          w_ntop(&c->sock->ws_laddr, ip_tmp),
-         c->sock->ws_laddr.af == AF_INET6 ? "[" : "",
+         c->sock->ws_laddr.af == AF_INET6 ? "]" : "",
          bswap16(c->sock->ws_lport));
 
     timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
@@ -1180,39 +1184,4 @@ char * hex2str(const uint8_t * const src,
     }
 
     return dst;
-}
-
-
-const char *
-cid2str(const struct cid * const cid, char * const dst, const size_t len_dst)
-{
-    const int n = snprintf(dst, len_dst, "%" PRIu ":", cid ? cid->seq : 0);
-    if (cid)
-        hex2str(cid->id, cid->len, &dst[n], len_dst - (size_t)n);
-    return dst;
-}
-
-
-void mk_rand_cid(struct cid * const cid,
-                 const uint8_t len,
-                 const bool srt
-#ifdef NO_SRT_MATCHING
-                 __attribute__((unused))
-#endif
-)
-{
-    // len==0 means zero-len cid
-    if (len) {
-        // illegal len means randomize
-        cid->len = len <= CID_LEN_MAX
-                       ? len
-                       : 8 + (uint8_t)w_rand_uniform32(CID_LEN_MAX - 7);
-        rand_bytes(cid->id, cid->len);
-    }
-
-#ifndef NO_SRT_MATCHING
-    cid->has_srt = srt;
-    if (srt)
-        rand_bytes(cid->srt, sizeof(cid->srt));
-#endif
 }

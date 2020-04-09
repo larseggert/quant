@@ -33,6 +33,7 @@
 #include <quant/quant.h>
 
 #include "bitset.h"
+#include "cid.h"
 
 
 #define FRM_PAD 0x00 ///< PADDING

@@ -38,6 +38,7 @@ extern "C" {
 
 #include <picotls/openssl.h> // IWYU pragma: keep
 
+#include "cid.h"
 #include "conn.h" // IWYU pragma: keep
 #include "pkt.h"
 #include "pn.h" // IWYU pragma: keep
@@ -79,9 +80,7 @@ static void BM_quic_encryption(benchmark::State & state)
 }
 
 
-BENCHMARK(BM_quic_encryption)
-    ->RangeMultiplier(2)
-    ->Ranges({{16, 1500}, {0, 1}})
+BENCHMARK(BM_quic_encryption)->RangeMultiplier(2)->Ranges({{16, 1500}, {0, 1}})
     // ->MinTime(3)
     // ->UseRealTime()
     ;

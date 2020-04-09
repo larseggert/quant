@@ -36,6 +36,10 @@
 #include "quic.h"
 #include "tls.h"
 
+#ifdef DEBUG_STREAMS
+#include "cid.h"
+#endif
+
 
 #define STRM_FL_SRV 0x01
 #define STRM_FL_UNI 0x02

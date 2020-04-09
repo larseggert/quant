@@ -36,6 +36,10 @@
 #include "quic.h"
 #include "stream.h"
 
+#ifdef DEBUG_EXTRA
+#include "cid.h"
+#endif
+
 
 void pm_by_nr_del(khash_t(pm_by_nr) * const pbn,
                   const struct pkt_meta * const p)

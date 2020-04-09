@@ -37,6 +37,7 @@
 #include <quant/quant.h>
 
 #include "bitset.h"
+#include "cid.h"
 #include "frame.h"
 #include "loop.h"
 #include "marshall.h"

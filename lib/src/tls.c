@@ -103,6 +103,7 @@ static int uecc_rng(uint8_t * dest, unsigned size)
 
 
 #include "bitset.h"
+#include "cid.h"
 #include "conn.h"
 #include "frame.h"
 #include "marshall.h"
@@ -582,8 +583,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             if (decv(&l, &pos, end) == false)
                 return 1;
 #ifndef NO_SRT_MATCHING
-            struct cid * const dcid = c->dcid;
-            uint8_t * srt = dcid->srt;
+            uint8_t * srt = c->dcid->srt;
 #else
             uint8_t srt[SRT_LEN];
 #endif
@@ -595,8 +595,8 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             decb(srt, &pos, end, SRT_LEN);
             warn(INF, "\tstateless_reset_token = %s", srt_str(srt));
 #ifndef NO_SRT_MATCHING
-            dcid->has_srt = true;
-            conns_by_srt_ins(c, srt);
+            c->dcid->has_srt = true;
+            conns_by_srt_ins(c, c->dcid->srt);
 #endif
             break;
 
@@ -631,7 +631,13 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             pa->cid.has_srt = true;
 #endif
             decb(srt, &pos, e, SRT_LEN);
-            add_dcid(c, &pa->cid);
+#ifndef NO_SRT_MATCHING
+            struct cid * const dcid =
+#endif
+                cid_ins(&c->dcids, &pa->cid);
+#ifndef NO_SRT_MATCHING
+            conns_by_srt_ins(c, dcid->srt);
+#endif
 
             warn(INF,
                  "\tpreferred_address = IPv4=%s:%u IPv6=[%s]:%u cid=%s srt=%s",
@@ -1795,8 +1801,13 @@ void make_rit(const struct q_conn * const c,
     uint8_t * end = pos + ped(c->w)->scratch_len;
 
     // encode the pseudo packet
-    enc1(&pos, end, c->odcid.len);
-    encb(&pos, end, c->odcid.id, c->odcid.len);
+    if (is_clnt(c)) {
+        enc1(&pos, end, c->odcid.len);
+        encb(&pos, end, c->odcid.id, c->odcid.len);
+    } else {
+        enc1(&pos, end, c->oscid.len);
+        encb(&pos, end, c->oscid.id, c->oscid.len);
+    }
     enc1(&pos, end, flags);
     enc4(&pos, end, c->vers);
     enc1(&pos, end, dcid->len);

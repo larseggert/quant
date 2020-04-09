@@ -32,6 +32,7 @@
 
 #include <quant/quant.h>
 
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "quic.h"

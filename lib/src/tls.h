@@ -42,6 +42,7 @@ struct w_iov;           // IWYU pragma: no_forward_declare w_iov
 
 // IWYU pragma: no_include <quant/quant.h>
 // IWYU pragma: no_include "quic.h"
+// IWYU pragma: no_include "cid.h"
 
 
 #ifdef FUZZING

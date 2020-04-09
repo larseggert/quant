@@ -553,6 +553,8 @@ int main(int argc, char * argv[])
                 q_ready(w, timeout * NS_PER_S, &c);
                 if (c == 0)
                     break;
+                if (q_is_conn_closed(c))
+                    break;
             }
 
         } while (all_closed == false);

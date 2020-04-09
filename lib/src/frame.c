@@ -1017,7 +1017,7 @@ dec_new_cid_frame(const uint8_t ** pos,
 #if !defined(NO_MIGRATION) || !defined(NDEBUG)
     const bool dup =
 #ifndef NO_MIGRATION
-        splay_find(cids_by_seq, &c->dcids_by_seq, &dcid);
+        cid_by_seq(&c->dcids, dcid.seq) != 0;
 #else
         false;
 #endif
@@ -1032,11 +1032,10 @@ dec_new_cid_frame(const uint8_t ** pos,
 #ifndef NO_MIGRATION
     const uint_t max_act_cids =
         c->tp_mine.act_cid_lim + (c->tp_peer.pref_addr.cid.len ? 1 : 0);
-    if (likely(dup == false) &&
-        unlikely(splay_count(&c->dcids_by_seq) > max_act_cids))
+    if (likely(dup == false) && unlikely(cid_cnt(&c->dcids) > max_act_cids))
         err_close_return(c, ERR_CONNECTION_ID_LIMIT, FRM_CID,
                          "illegal seq %" PRIu " (have %" PRIu "/%" PRIu ")",
-                         dcid.seq, splay_count(&c->dcids_by_seq), max_act_cids);
+                         dcid.seq, cid_cnt(&c->dcids), max_act_cids);
 
     if (unlikely(rpt > dcid.seq))
         err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID,
@@ -1047,20 +1046,18 @@ dec_new_cid_frame(const uint8_t ** pos,
                          dcid.len);
 
     if (rpt > c->rpt_max) {
-        struct cid * rcid;
-        splay_foreach (rcid, cids_by_seq, &c->dcids_by_seq)
-            if (rcid->seq < rpt) {
-                warn(DBG, "retiring %s", cid_str(rcid));
-                c->tx_retire_cid = rcid->retired = true;
-            } else
-                break;
+        retire_prior_to(&c->dcids, rpt);
         c->rpt_max = rpt;
     } else if (c->rpt_max)
         warn(INF, "rpt %" PRIu " <= prev max %" PRIu ", ignoring", rpt,
              c->rpt_max);
 
-    if (dup == false)
-        add_dcid(c, &dcid);
+    if (dup == false) {
+        struct cid * const ndcid = cid_ins(&c->dcids, &dcid);
+#ifndef NO_SRT_MATCHING
+        conns_by_srt_ins(c, ndcid->srt);
+#endif
+    }
 
 #else
     err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID,
@@ -1107,27 +1104,26 @@ dec_retire_cid_frame(const uint8_t ** pos,
                      const struct pkt_meta * const m)
 {
     struct q_conn * const c = m->pn->c;
-    struct cid which = {.seq = 0};
-    decv_chk(&which.seq, pos, end, c, FRM_RTR);
+    uint_t seq = 0;
+    decv_chk(&seq, pos, end, c, FRM_RTR);
 
-    warn(INF, FRAM_IN "RETIRE_CONNECTION_ID" NRM " seq=%" PRIu, which.seq);
+    warn(INF, FRAM_IN "RETIRE_CONNECTION_ID" NRM " seq=%" PRIu, seq);
 
 #ifndef NO_MIGRATION
-    struct cid * const scid = splay_find(cids_by_seq, &c->scids_by_seq, &which);
+    struct cid * const scid = cid_by_seq(&c->scids, seq);
     if (unlikely(scid == 0)) {
-        warn(INF, "no cid seq %" PRIu, which.seq);
+        warn(INF, "no cid seq %" PRIu, seq);
         goto done;
     }
     // cppcheck-suppress nullPointerRedundantCheck
     else if (c->scid->seq == scid->seq) {
-        struct cid * const next_scid =
-            splay_next(cids_by_seq, &c->scids_by_seq, scid);
+        struct cid * const next_scid = next_cid(&c->scids, scid->seq);
         if (unlikely(next_scid == 0))
             err_close_return(c, ERR_INTERNAL, FRM_RTR, "no next scid");
         c->scid = next_scid;
     }
-
-    free_scid(c, scid);
+    conns_by_id_del(scid);
+    cid_del(&c->scids, scid);
 
     // rx of RETIRE_CONNECTION_ID means we should send more
     c->tx_ncid = true;
@@ -1865,11 +1861,9 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
 {
     struct q_conn * const c = m->pn->c;
 
-    const struct cid * const max_scid =
-        splay_max(cids_by_seq, &c->scids_by_seq);
-    const struct cid * const min_scid =
-        splay_min(cids_by_seq, &c->scids_by_seq);
-    c->max_cid_seq_out = MAX(min_scid->seq, c->max_cid_seq_out + 1);
+    const uint_t max_scid = max_seq(&c->scids);
+    const uint_t min_scid = min_seq(&c->scids);
+    c->max_cid_seq_out = MAX(min_scid, c->max_cid_seq_out + 1);
     struct cid ncid = {.seq = c->max_cid_seq_out};
 
     // FIXME: send an actual rpt
@@ -1882,10 +1876,10 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
 #endif
 
     struct cid * enc_cid = &ncid;
-    if (max_scid && ncid.seq <= max_scid->seq) {
-        enc_cid = splay_find(cids_by_seq, &c->scids_by_seq, &ncid);
-        ensure(enc_cid, "max_scid->seq %" PRIu " ncid.seq %" PRIu,
-               max_scid->seq, ncid.seq);
+    if (ncid.seq <= max_scid) {
+        enc_cid = cid_by_seq(&c->scids, ncid.seq);
+        ensure(enc_cid, "max_scid %" PRIu " ncid.seq %" PRIu, max_scid,
+               ncid.seq);
 #ifndef NO_SRT_MATCHING
         srt = enc_cid->srt;
 #endif
@@ -1894,7 +1888,7 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
                     is_clnt(c) ? ped(c->w)->conf.client_cid_len
                                : ped(c->w)->conf.server_cid_len,
                     true);
-        add_scid(c, &ncid);
+        conns_by_id_ins(c, cid_ins(&c->scids, &ncid));
 #ifndef NO_SRT_MATCHING
         srt = ncid.srt;
 #endif
