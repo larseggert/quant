@@ -1284,8 +1284,12 @@ int tls_io(struct q_stream * const s, struct w_iov * const iv)
                     c->try_0rtt &&
                     (c->tls.tls_hshk_prop.client.early_data_acceptance ==
                      PTLS_EARLY_DATA_ACCEPTED);
-        } else
+        } else {
             c->tx_hshk_done = ptls_handshake_is_complete(c->tls.t) != 0;
+            if (c->tx_hshk_done)
+                // also stop caring about oscid now
+                conns_by_id_del(&c->oscid);
+        }
 
     } else if (ret != PTLS_ERROR_IN_PROGRESS &&
                ret != PTLS_ERROR_STATELESS_RETRY) {

@@ -364,11 +364,17 @@ static void __attribute__((nonnull)) do_tx_txq(struct q_conn * const c,
 }
 
 
-static void __attribute__((nonnull)) do_tx(struct q_conn * const c)
+static void __attribute__((nonnull)) maybe_set_ld_timer(struct q_conn * const c)
 {
-    if (is_clnt(c) || likely(c->pns[ep_init].abandoned))
+    if (likely(c->pns[ep_init].abandoned) || is_clnt(c))
         // do it here instead of in on_pkt_sent()
         set_ld_timer(c);
+}
+
+
+static void __attribute__((nonnull)) do_tx(struct q_conn * const c)
+{
+    maybe_set_ld_timer(c);
     log_cc(c);
 
     c->needs_tx = false;
@@ -621,6 +627,9 @@ done:;
     }
     if (likely(sent))
         do_tx(c);
+    else
+        // we need to rearm LD alarm
+        maybe_set_ld_timer(c);
 }
 
 
@@ -882,7 +891,9 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
                     warn(DBG, "already tx'ing retry, ignoring");
                     goto done;
                 }
+#ifdef DEBUG_EXTRA
                 warn(INF, "sending retry");
+#endif
                 // send a RETRY
                 make_rtry_tok(c);
                 ok = true;
@@ -926,6 +937,8 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
 
         // server picks a new random cid
         update_act_scid(c);
+        // keep paying attention to oscid in case of reordered/dup'ed Initials
+        conns_by_id_ins(c, &c->oscid);
 
         ok = true;
 #endif
@@ -1281,17 +1294,22 @@ static void __attribute__((nonnull))
             }
 
             if (m->hdr.dcid.len && cid_cmp(&m->hdr.dcid, c->scid) != 0) {
-                struct cid * const scid =
+                struct cid * scid =
 #ifndef NO_MIGRATION
                     cid_by_id(&c->scids, &m->hdr.dcid);
 #else
                     c->scid;
 #endif
+
                 if (unlikely(scid == 0)) {
-                    log_pkt("RX", v, &v->saddr, tok, tok_len, rit);
-                    warn(ERR, "unknown scid %s, ignoring pkt",
-                         cid_str(&m->hdr.dcid));
-                    goto drop;
+                    if (cid_cmp(&m->hdr.dcid, &c->oscid) == 0)
+                        scid = &c->oscid;
+                    else {
+                        log_pkt("RX", v, &v->saddr, tok, tok_len, rit);
+                        warn(ERR, "unknown scid %s, ignoring pkt",
+                             cid_str(&m->hdr.dcid));
+                        goto drop;
+                    }
                 }
 
                 mk_cid_str(NTE, scid, scid_str);
@@ -1846,12 +1864,13 @@ struct q_conn * new_conn(struct w_engine * const w,
                                          .port = port});
 
         if (ws) {
+#ifdef DEBUG_EXTRA
             warn(DBG, "other socket is %s%s%s:%u",
                  w->ifaddr[other_af_idx].addr.af == AF_INET6 ? "[" : "",
                  w_ntop(&w->ifaddr[other_af_idx].addr, ip_tmp),
                  w->ifaddr[other_af_idx].addr.af == AF_INET6 ? "]" : "",
                  bswap16(port));
-
+#endif
             memcpy(&c->tp_mine.pref_addr.addr4,
                    w->ifaddr[idx].addr.af == AF_INET ? &c->sock->ws_loc
                                                      : &ws->ws_loc,

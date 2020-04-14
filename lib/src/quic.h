@@ -64,7 +64,7 @@ struct q_conn; // IWYU pragma: no_forward_declare q_conn
 
 // #define DEBUG_EXTRA ///< Set to log various extra details.
 // #define DEBUG_STREAMS ///< Set to log stream scheduling details.
-// #define DEBUG_TIMERS  ///< Set to log timer details.
+#define DEBUG_TIMERS  ///< Set to log timer details.
 // #define DEBUG_PROT    ///< Set to log packet protection/encryption details.
 
 #define DATA_OFFSET 48 ///< Offsets of stream frame payload data we TX.
