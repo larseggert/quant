@@ -1053,7 +1053,10 @@ dec_new_cid_frame(const uint8_t ** pos,
              c->rpt_max);
 
     if (dup == false) {
-        struct cid * const ndcid = cid_ins(&c->dcids, &dcid);
+#ifndef NO_SRT_MATCHING
+        struct cid * const ndcid =
+#endif
+            cid_ins(&c->dcids, &dcid);
 #ifndef NO_SRT_MATCHING
         conns_by_srt_ins(c, ndcid->srt);
 #endif
