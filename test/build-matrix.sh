@@ -35,7 +35,7 @@ for flag in "${opts[@]}"; do
                                     grep particle-argon.elf)
                         ;;
                     riot)
-                        out=$(make LTO=0 BUILD_IN_DOCKER=1 DEVELHELP=0 \
+                        out=$(gmake LTO=0 BUILD_IN_DOCKER=1 DEVELHELP=0 \
                              BUILD_FLAGS=1 \
                              DOCKER_ENVIRONMENT_CMDLINE="-e BUILD_FLAGS=\"$all\"")
                         ;;
