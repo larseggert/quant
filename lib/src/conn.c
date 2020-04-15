@@ -937,9 +937,10 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
 
         // server picks a new random cid
         update_act_scid(c);
+#ifndef NO_MIGRATION
         // keep paying attention to oscid in case of reordered/dup'ed Initials
         conns_by_id_ins(c, &c->oscid);
-
+#endif
         ok = true;
 #endif
         break;

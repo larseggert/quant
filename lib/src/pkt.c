@@ -375,8 +375,10 @@ enc_other_frames(
         sl_foreach_safe (id, &c->dcids.ret, next, tmp)
             if (id->seq < c->dcid->seq) {
                 enc_retire_cid_frame(ci, pos, end, m, id);
+#ifndef NO_SRT_MATCHING
                 if (id->has_srt)
                     conns_by_srt_del(id->srt);
+#endif
                 cid_del(&c->dcids, id);
             }
     }
