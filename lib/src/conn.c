@@ -627,9 +627,11 @@ done:;
     }
     if (likely(sent))
         do_tx(c);
-    else
+    else {
         // we need to rearm LD alarm
         maybe_set_ld_timer(c);
+        c->needs_tx = false;
+    }
 }
 
 
