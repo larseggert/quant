@@ -14,5 +14,5 @@ quant     *    x    V    H    D    C    R    Z    S    Q    M    B         U    
 quic-go
 quiche    *         V    H    D    C    R    Z    S    Q                                  O    3
 quicly    *         V    H    D    C    R    Z    S    Q                   U              O    3
-quinn     *         V    H    D    C    R         S         M    B         U    P    E    O    3
-winquic   *         V    H    D    C    R    Z         Q    M    B         U    P         O    3
+quinn     *         V    H    D    C    R    Z    S         M    B         U    P    E    O    3
+winquic   *         V    H    D    C    R    Z    S    Q    M    B         U    P         O    3
