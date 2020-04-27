@@ -29,7 +29,6 @@
 #include <fcntl.h>
 #include <libgen.h>
 #include <limits.h>
-#include <math.h>
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -63,8 +62,7 @@
 #define bps(bytes, secs)                                                       \
     __extension__({                                                            \
         static char _str[32];                                                  \
-        const double _bps =                                                    \
-            (bytes) && (fpclassify(secs) != FP_ZERO) ? (bytes)*8 / (secs) : 0; \
+        const double _bps = ((secs) > 1e-9) ? (double)(bytes)*8 / (secs) : 0;  \
         if (_bps > NS_PER_S)                                                   \
             snprintf(_str, sizeof(_str), "%.3f Gb/s", _bps / NS_PER_S);        \
         else if (_bps > US_PER_S)                                              \
@@ -89,7 +87,7 @@ struct conn_cache_entry {
 KHASH_MAP_INIT_INT64(conn_cache, struct conn_cache_entry *)
 
 
-static uint32_t vers = 0xbabababa;
+static uint32_t vers = 0;
 static uint32_t timeout = 10;
 static uint32_t num_bufs = 100000;
 static uint32_t reps = 1;
@@ -215,7 +213,7 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
     // extract relevant info from URL
     char dest[1024];
     char port[64];
-    char path[2048];
+    char path[8192];
     set_from_url(dest, sizeof(dest), url, &u, UF_HOST, "localhost");
     set_from_url(port, sizeof(port), url, &u, UF_PORT, "4433");
     set_from_url(path, sizeof(path), url, &u, UF_PATH, "/index.html");
@@ -263,7 +261,7 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
 
     } else {
         // assemble an HTTP/0.9 request
-        char req_str[MAXPATHLEN + 6];
+        char req_str[sizeof(path) + 6];
         const int req_str_len =
             snprintf(req_str, sizeof(req_str), "GET %s\r\n", path);
         q_chunk_str(w, cce ? cce->c : 0, peer->ai_family, req_str,
@@ -348,7 +346,7 @@ static void __attribute__((nonnull)) free_cc(khash_t(conn_cache) * cc)
 {
     struct conn_cache_entry * cce;
     kh_foreach_value(cc, cce, { free(cce); });
-    kh_destroy(conn_cache, cc);
+    kh_release(conn_cache, cc);
 }
 
 
@@ -420,7 +418,7 @@ int main(int argc, char * argv[])
     char tls_log[MAXPATHLEN] = "";
     char qlog_dir[MAXPATHLEN] = "";
     bool verify_certs = false;
-    int ret = 0;
+    int ret = -1;
 
     // set default TLS log file from environment
     const char * const keylog = getenv("SSLKEYLOGFILE");
@@ -504,6 +502,7 @@ int main(int argc, char * argv[])
             .conn_conf =
                 &(struct q_conn_conf){.enable_tls_key_updates = flip_keys,
                                       .enable_spinbit = true,
+                                      .enable_udp_zero_checksums = true,
                                       .idle_timeout = timeout,
                                       .version = vers,
                                       .enable_quantum_readiness_test = test_qr},
@@ -513,16 +512,18 @@ int main(int argc, char * argv[])
             .tls_log = *tls_log ? tls_log : 0,
             .client_cid_len = zlen_cids ? 0 : 4,
             .enable_tls_cert_verify = verify_certs});
-    khash_t(conn_cache) * cc = kh_init(conn_cache);
+    khash_t(conn_cache) cc = {0};
 
     if (reps > 1)
         puts("size\ttime\t\tbps\t\turl");
+    double sum_len = 0;
+    double sum_elapsed = 0;
     for (uint64_t r = 1; r <= reps; r++) {
         int url_idx = optind;
         while (url_idx < argc) {
             // open a new connection, or get an open one
             warn(INF, "%s retrieving %s", basename(argv[0]), argv[url_idx]);
-            get(argv[url_idx++], w, cc);
+            get(argv[url_idx++], w, &cc);
         }
 
         // collect the replies
@@ -552,6 +553,8 @@ int main(int argc, char * argv[])
                 q_ready(w, timeout * NS_PER_S, &c);
                 if (c == 0)
                     break;
+                if (q_is_conn_closed(c))
+                    break;
             }
 
         } while (all_closed == false);
@@ -559,23 +562,28 @@ int main(int argc, char * argv[])
         // print/save the replies
         while (sl_empty(&sl) == false) {
             struct stream_entry * const se = sl_first(&sl);
-            ret |= w_iov_sq_cnt(&se->rep) == 0;
+            if (ret == -1)
+                ret = w_iov_sq_cnt(&se->rep) == 0;
+            else
+                ret |= w_iov_sq_cnt(&se->rep) == 0;
 
             struct timespec diff;
             timespec_sub(&se->rep_t, &se->req_t, &diff);
             const double elapsed = timespec_to_double(diff);
+            const uint_t rep_len = w_iov_sq_len(&se->rep);
+            sum_len += (double)rep_len;
+            sum_elapsed += elapsed;
             if (reps > 1)
-                printf("%" PRIu "\t%f\t\"%s\"\t%s\n", w_iov_sq_len(&se->rep),
-                       elapsed, bps(w_iov_sq_len(&se->rep), elapsed), se->url);
+                printf("%" PRIu "\t%f\t\"%s\"\t%s\n", rep_len, elapsed,
+                       bps(rep_len, elapsed), se->url);
 #ifndef NDEBUG
             char cid_str[64];
-            q_cid(se->c, cid_str, sizeof(cid_str));
+            q_cid_str(se->c, cid_str, sizeof(cid_str));
             warn(WRN,
                  "read %" PRIu
                  " byte%s in %.3f sec (%s) on conn %s strm %" PRIu,
-                 w_iov_sq_len(&se->rep), plural(w_iov_sq_len(&se->rep)),
-                 elapsed < 0 ? 0 : elapsed,
-                 bps(w_iov_sq_len(&se->rep), elapsed), cid_str, q_sid(se->s));
+                 rep_len, plural(rep_len), elapsed < 0 ? 0 : elapsed,
+                 bps(rep_len, elapsed), cid_str, q_sid(se->s));
 #endif
 
             // retrieve the TX'ed request
@@ -624,9 +632,12 @@ int main(int argc, char * argv[])
         }
     }
 
-    free_cc(cc);
+    if (reps > 1)
+        printf("TOTAL: %s\n", bps(sum_len, sum_elapsed));
+
+    free_cc(&cc);
     free_sl();
     q_cleanup(w);
-    warn(DBG, "%s exiting", basename(argv[0]));
+    warn(DBG, "%s exiting with %d", basename(argv[0]), ret);
     return ret;
 }

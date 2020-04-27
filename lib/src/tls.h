@@ -42,6 +42,7 @@ struct w_iov;           // IWYU pragma: no_forward_declare w_iov
 
 // IWYU pragma: no_include <quant/quant.h>
 // IWYU pragma: no_include "quic.h"
+// IWYU pragma: no_include "cid.h"
 
 
 #ifdef FUZZING
@@ -137,7 +138,9 @@ extern void __attribute__((nonnull)) make_rit(const struct q_conn * const c,
                                               uint8_t * const rit);
 
 extern void __attribute__((nonnull))
-flip_keys(struct q_conn * const c, const bool out);
+flip_keys(struct q_conn * const c,
+          const bool out,
+          const ptls_cipher_suite_t * const cs);
 
 extern void __attribute__((nonnull))
 maybe_flip_keys(struct q_conn * const c, const bool out);

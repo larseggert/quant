@@ -79,6 +79,10 @@ if(HAVE_BENCHMARK_H)
       add_executable(${TARGET} ${TARGET}.cc)
       target_link_libraries(${TARGET} PUBLIC benchmark pthread libquant)
     endif()
+    if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang" AND
+       CMAKE_C_COMPILER_VERSION VERSION_GREATER 9)
+      target_compile_options(${TARGET} PRIVATE -Wno-poison-system-directories)
+    endif()
 
     if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND CMAKE_COMPILER_IS_GNUCC)
       target_link_options(${TARGET} PUBLIC -lc++)
@@ -92,6 +96,7 @@ if(HAVE_BENCHMARK_H)
         ${PROJECT_BINARY_DIR}/lib/include
         ${PROJECT_SOURCE_DIR}/lib/src
       SYSTEM PRIVATE
+        /usr/local/include
         ${OPENSSL_ROOT_DIR}/include
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/lib/deps/timeout>
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/lib/deps/picotls/include>

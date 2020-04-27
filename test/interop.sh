@@ -21,7 +21,7 @@ fi
 # For quant, call client and server with full path, so addr2line can find them
 
 if [ "$ROLE" == "client" ]; then
-    CLIENT_ARGS="-i eth0 -w -q $QLOGDIR -l $SSLKEYLOGFILE \
+    CLIENT_ARGS="-i eth0 -w -q $QLOGDIR -l $SSLKEYLOGFILE -t 150 \
         -e 0xff00001b $CLIENT_ARGS"
 
     # Wait for the simulator to start up.
@@ -44,7 +44,7 @@ if [ "$ROLE" == "client" ]; then
     "multiconnect")
         for req in $REQUESTS; do
             ((skip++))
-            /usr/local/bin/client -t 20 $CLIENT_ARGS \
+            /usr/local/bin/client $CLIENT_ARGS \
                 -q "$QLOGDIR" $req 2>&1 | \
                 tee -i -a "/logs/$ROLE.log"
             echo "XXX $ROLE DONE" | tee -i -a "/logs/$ROLE.log"

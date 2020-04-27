@@ -10,13 +10,15 @@ RUN apt-get update -y && apt-get install -y \
 FROM qns
 ADD . /src
 WORKDIR /src/Debug
-RUN cmake -DDOCKER=True  ..
+RUN cmake ..
 RUN make install
 
 FROM martenseemann/quic-network-simulator-endpoint
 RUN apt-get update -y && apt-get install -y \
         binutils \
-        libhttp-parser2.8 && \
+        libasan5 \
+        libhttp-parser2.9 \
+        libubsan1 && \
         apt-get clean
 COPY --from=1 /usr/local /usr/local
 COPY --from=1 /src/Debug/test/dummy.* /tls/

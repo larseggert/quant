@@ -31,6 +31,7 @@ SRC += \
 	$(RIOTPROJECT)/$(PTLS_SRC)/lib/cifra/chacha20.c \
 	$(RIOTPROJECT)/$(PTLS_SRC)/lib/picotls.c \
 	$(RIOTPROJECT)/$(PTLS_SRC)/lib/uecc.c \
+	$(RIOTPROJECT)/$(QUIC_SRC)/cid.c \
 	$(RIOTPROJECT)/$(QUIC_SRC)/conn.c \
 	$(RIOTPROJECT)/$(QUIC_SRC)/diet.c \
 	$(RIOTPROJECT)/$(QUIC_SRC)/frame.c \

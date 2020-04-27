@@ -33,6 +33,7 @@
 
 #include <warpcore/warpcore.h>
 
+#include "cid.h"
 #include "conn.h"
 #include "quic.h"
 #include "tls.h"
@@ -169,19 +170,19 @@ extern bool __attribute__((nonnull))
 dec_pkt_hdr_beginning(struct w_iov * const xv,
                       struct w_iov * const v,
                       struct pkt_meta * const m,
+                      struct w_iov_sq * const x,
                       const bool is_clnt,
                       uint8_t * const tok,
                       uint16_t * const tok_len,
                       uint8_t * const rit,
-                      const uint8_t dcid_len);
+                      const uint8_t dcid_len,
+                      bool * decoal);
 
 extern bool __attribute__((nonnull))
 dec_pkt_hdr_remainder(struct w_iov * const xv,
                       struct w_iov * const v,
                       struct pkt_meta * const m,
-                      struct q_conn * const c,
-                      struct w_iov_sq * const x,
-                      bool * const decoal);
+                      struct q_conn * const c);
 
 extern struct q_conn * __attribute__((nonnull))
 is_srt(const struct w_iov * const xv, struct pkt_meta * const m);

@@ -29,20 +29,12 @@
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 
 #include <picotls.h>
 #include <quant/quant.h>
 #include <timeout.h>
-
-#ifdef HAVE_ASAN
-#include <sanitizer/asan_interface.h>
-#else
-#define ASAN_POISON_MEMORY_REGION(x, y)
-#define ASAN_UNPOISON_MEMORY_REGION(x, y)
-#endif
 
 #if !defined(NDEBUG) && !defined(FUZZING) && defined(FUZZER_CORPUS_COLLECTION)
 #include <errno.h>
@@ -67,7 +59,6 @@
 #include "tree.h"
 
 
-char __cid_str[CID_STR_LEN];
 char __srt_str[hex_str_len(SRT_LEN)];
 char __tok_str[hex_str_len(MAX_TOK_LEN)];
 char __rit_str[hex_str_len(RIT_LEN)];
@@ -361,28 +352,30 @@ bool q_write(struct q_stream * const s,
 }
 
 
+static struct q_stream * __attribute__((nonnull))
+find_ready_strm(khash_t(strms_by_id) * const sbi, const bool all)
+{
+    struct q_stream * s = 0;
+    bool found = false;
+    kh_foreach_value(sbi, s, {
+        if (s->state == strm_clsd ||
+            (!sq_empty(&s->in) && (!all || s->state == strm_hcrm))) {
+            found = true;
+            break;
+        }
+    });
+
+    // stream is closed, or has data (and a a FIN, if we're reading all)
+    return found ? s : 0;
+}
+
+
 struct q_stream *
 q_read(struct q_conn * const c, struct w_iov_sq * const q, const bool all)
 {
-    struct q_stream * s = 0;
-    do {
-        kh_foreach_value(&c->strms_by_id, s, {
-            if (!sq_empty(&s->in) || s->state == strm_clsd)
-                // we found a stream with queued data
-                break;
-        });
-
-        if (s == 0 && all) {
-            // no data queued on any stream, wait for new data
-            warn(WRN, "waiting to read on any strm on %s conn %s", conn_type(c),
-                 cid_str(c->scid));
-            loop_run(c->w, (func_ptr)q_read, c, 0);
-        }
-    } while (s == 0 && all);
-
-    if (s && s->state != strm_clsd)
-        q_read_stream(s, q, false);
-
+    struct q_stream * const s = find_ready_strm(&c->strms_by_id, all);
+    if (s)
+        q_read_stream(s, q, all);
     return s;
 }
 
@@ -415,6 +408,10 @@ bool q_read_stream(struct q_stream * const s,
          plural(w_iov_sq_cnt(&s->in)), conn_type(c), cid_str(c->scid), s->id);
 
     sq_concat(q, &s->in);
+
+    const struct q_stream * const sr = find_ready_strm(&c->strms_by_id, all);
+    c->have_new_data = sr != 0;
+
     if (all && m_last->is_fin == false)
         goto again;
 
@@ -473,7 +470,7 @@ static void __attribute__((nonnull))
 restart_api_alarm(struct w_engine * const w, const uint64_t nsec)
 {
 #ifdef DEBUG_TIMERS
-    warn(DBG, "next API alarm in %.3f sec", nsec / (double)NS_PER_S);
+    warn(DBG, "next API alarm in %.3f sec", (double)nsec / NS_PER_S);
 #endif
 
     timeouts_add(ped(w)->wheel, &ped(w)->api_alarm, nsec);
@@ -586,6 +583,7 @@ struct w_engine * q_init(const char * const ifname,
     w->data = calloc(1, sizeof(struct per_engine_data) + w->mtu);
     ensure(w->data, "could not calloc");
     ped(w)->scratch_len = w->mtu;
+    poison_scratch(ped(w)->scratch, ped(w)->scratch_len);
 
     ped(w)->pkt_meta = calloc(num_bufs, sizeof(*ped(w)->pkt_meta));
     ensure(ped(w)->pkt_meta, "could not calloc");
@@ -651,7 +649,7 @@ struct w_engine * q_init(const char * const ifname,
     loop_init();
     int err;
     ped(w)->wheel = timeouts_open(TIMEOUT_nHZ, &err);
-    timeouts_update(ped(w)->wheel, loop_now());
+    timeouts_update(ped(w)->wheel, w_now());
     timeout_setcb(&ped(w)->api_alarm, cancel_api_call, &ped(w)->api_alarm);
 
     warn(INF, "%s/%s (%s) %s/%s ready", quant_name, w->backend_name,
@@ -829,7 +827,7 @@ done:
         sl_remove(&c_zcid, c, q_conn, node_zcid_int);
 
 #ifndef NO_SERVER
-    if (c->holds_sock && w_connected(c->sock) == false)
+    if (is_clnt(c) == false && c->holds_sock && w_connected(c->sock) == false)
         sl_remove(&c_embr, c, q_conn, node_embr);
 #endif
     free_conn(c);
@@ -906,16 +904,22 @@ void q_cleanup(struct w_engine * const w)
 }
 
 
+void q_cid(struct q_conn * const c, uint8_t * const buf, size_t * const buf_len)
+{
+    ensure(*buf_len >= CID_LEN_MAX, "buf too short (need at least %d)",
+           CID_LEN_MAX);
+
+    memcpy(buf, c->oscid.id, c->oscid.len);
+    *buf_len = c->oscid.len;
+}
+
+
 const char *
-q_cid(struct q_conn * const c, char * const buf, const size_t buf_len)
+q_cid_str(struct q_conn * const c, char * const buf, const size_t buf_len)
 {
     ensure(buf_len >= hex_str_len(CID_LEN_MAX),
-           "buf too short (need at least %lu)",
-           (unsigned long)hex_str_len(CID_LEN_MAX));
-    if (likely(c->scid))
-        hex2str(c->scid->id, c->scid->len, buf, buf_len);
-    else
-        *buf = 0;
+           "buf too short (need at least %d)", hex_str_len(CID_LEN_MAX));
+    hex2str(c->oscid.id, c->oscid.len, buf, buf_len);
     return buf;
 }
 
@@ -984,20 +988,34 @@ bool q_ready(struct w_engine * const w,
 
     struct q_conn * const c = sl_first(&c_ready);
     if (c) {
-        sl_remove_head(&c_ready, node_rx_ext);
-        c->in_c_ready = false;
-#if !defined(NDEBUG) && defined(DEBUG_EXTRA)
+        bool remove = true;
+#ifndef NDEBUG
         char * op = "rx";
-#ifndef NO_SERVER
-        if (c->needs_accept)
-            op = "accept";
-        else
 #endif
-            if (c->state == conn_clsd && c->have_new_data == false)
+#ifndef NO_SERVER
+        if (c->needs_accept) {
+#ifndef NDEBUG
+            op = "accept";
+#endif
+            remove = c->have_new_data == false;
+        } else
+#endif
+#ifndef NDEBUG
+            if (c->state == conn_clsd)
             op = "close";
         warn(WRN, "%s conn %s ready to %s", conn_type(c), cid_str(c->scid), op);
+#endif
+        if (remove) {
+            sl_remove_head(&c_ready, node_rx_ext);
+            c->in_c_ready = false;
+        }
     } else {
-        warn(WRN, "no conn ready to rx");
+        warn(WRN, "no conn ready");
+#ifndef NO_MIGRATION
+        struct q_conn * cc;
+        kh_foreach_value(&conns_by_id, cc,
+                         { warn(ERR, "%s", cid_str(cc->scid)); });
+        warn(WRN, "end");
 #endif
     }
     *ready = c;
@@ -1077,7 +1095,7 @@ void q_migrate(struct q_conn * const c,
         }
 
         // make sure we have a dcid to migrate to
-        if (splay_next(cids_by_seq, &c->dcids_by_seq, c->dcid) == 0)
+        if (next_cid(&c->dcids, c->dcid->seq) == 0)
             goto fail;
     }
 
@@ -1119,7 +1137,7 @@ void q_migrate(struct q_conn * const c,
          old_ip, old_af == AF_INET6 ? "]" : "", old_port,
          c->sock->ws_laddr.af == AF_INET6 ? "[" : "",
          w_ntop(&c->sock->ws_laddr, ip_tmp),
-         c->sock->ws_laddr.af == AF_INET6 ? "[" : "",
+         c->sock->ws_laddr.af == AF_INET6 ? "]" : "",
          bswap16(c->sock->ws_lport));
 
     timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
@@ -1173,39 +1191,4 @@ char * hex2str(const uint8_t * const src,
     }
 
     return dst;
-}
-
-
-const char *
-cid2str(const struct cid * const cid, char * const dst, const size_t len_dst)
-{
-    const int n = snprintf(dst, len_dst, "%" PRIu ":", cid ? cid->seq : 0);
-    if (cid)
-        hex2str(cid->id, cid->len, &dst[n], len_dst - (size_t)n);
-    return dst;
-}
-
-
-void mk_rand_cid(struct cid * const cid,
-                 const uint8_t len,
-                 const bool srt
-#ifdef NO_SRT_MATCHING
-                 __attribute__((unused))
-#endif
-)
-{
-    // len==0 means zero-len cid
-    if (len) {
-        // illegal len means randomize
-        cid->len = len <= CID_LEN_MAX
-                       ? len
-                       : 8 + (uint8_t)w_rand_uniform32(CID_LEN_MAX - 7);
-        rand_bytes(cid->id, cid->len);
-    }
-
-#ifndef NO_SRT_MATCHING
-    cid->has_srt = srt;
-    if (srt)
-        rand_bytes(cid->srt, sizeof(cid->srt));
-#endif
 }

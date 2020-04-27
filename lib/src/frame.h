@@ -258,14 +258,14 @@ enc_new_token_frame(struct q_conn_info * const ci,
 #ifndef NO_MIGRATION
 extern void __attribute__((nonnull
 #ifdef NO_QINFO
-                           (2, 3, 4, 5)
+                           (2, 3, 4)
 #endif
                                ))
 enc_retire_cid_frame(struct q_conn_info * const ci,
                      uint8_t ** pos,
                      const uint8_t * const end,
                      struct pkt_meta * const m,
-                     struct cid * const dcid);
+                     const uint_t seq);
 #endif
 
 extern void __attribute__((nonnull

@@ -280,7 +280,7 @@ function analyze {
     [ $? -eq 1 ] && echo E > "$ret_base.aecn"
     [ ! -e "$ret_base.fail" ] && [ -s "$ret_base.hshk" ] && \
         [ -s "$ret_base.data" ] && [ -s "$ret_base.clse" ] && rm -f "$log"
-    rm -f "$log_strip"
+    # rm -f "$log_strip"
 
     # analyze rsmt and 0rtt
     local log="$log_base.0rtt"
@@ -315,7 +315,7 @@ function analyze {
        END{exit ($x + $e == 2)};' "$log_strip"
     [ $? -eq 1 ] && echo S > "$ret_base.rtry"
     [ ! -e "$ret_base.fail" ] && [ -s "$ret_base.rtry" ] && rm -f "$log"
-    rm -f "$log_strip"
+    # rm -f "$log_strip"
 
     # analyze key update
     local log="$log_base.kyph"
@@ -354,9 +354,11 @@ function analyze {
     perl -n -e '/NAT rebinding/ and $x=1;
         /dec_path.*PATH_CHALLENGE/ and $x==1 and $x=2;
         /enc_path.*PATH_RESPONSE/ and $x==2 and $x=3;
-        /read (.*) bytes.*on clnt conn/ and $x==3 and ($1 > 0 ? $x=4 : next);
-        /dec_close.*err=0x([^ ]*)/ and ($1 ne "0" ? exit 0 : next);
-        $x==4 && /enc_close.*err=0x0/ && exit 1;' "$log_strip"
+        /read (.*) bytes.*on clnt conn/ and $x==3 and ($1 > 0 ? $x++ : next);
+        /dec_close.*err=0x([^ ]*)/ and ($1 ne "0" ? exit 0 : $x++);
+        /enc_close.*err=0x0/ and $x++;
+        END{exit ($x >= 5)};' "$log_strip"
+    # the >=5 should really be == 6, but haskell doesn't make me enc a CC frame
     [ $? -eq 1 ] && echo B > "$ret_base.bind"
     [ ! -e "$ret_base.fail" ] && [ -s "$ret_base.bind" ] && rm -f "$log"
     rm -f "$log_strip"

@@ -42,6 +42,7 @@
 #include <quant/quant.h>
 #include <timeout.h>
 
+#include "cid.h"
 #include "diet.h"
 #include "pn.h"
 #include "quic.h"
@@ -50,14 +51,6 @@
 
 
 KHASH_MAP_INIT_INT64(strms_by_id, struct q_stream *)
-
-
-static inline int __attribute__((nonnull, no_instrument_function))
-cid_cmp(const struct cid * const a, const struct cid * const b)
-{
-    // if the lengths are different, memcmp will fail on the first byte
-    return memcmp(&a->len, &b->len, a->len + sizeof(a->len));
-}
 
 
 #ifndef NO_MIGRATION
@@ -106,11 +99,11 @@ struct pref_addr {
     struct w_sockaddr addr4;
     struct w_sockaddr addr6;
     struct cid cid;
-    uint8_t _unused[8];
 };
 
 
 struct transport_params {
+    struct pref_addr pref_addr;
     uint_t max_strm_data_uni;
     uint_t max_strm_data_bidi_local;
     uint_t max_strm_data_bidi_remote;
@@ -122,10 +115,12 @@ struct transport_params {
     uint_t max_pkt;
     uint_t act_cid_lim;
     uint_t ack_del_exp;
-    struct pref_addr pref_addr;
-    struct cid orig_cid;
     bool disable_active_migration;
+#if HAVE_64BIT
     uint8_t _unused[7];
+#else
+    uint8_t _unused[3];
+#endif
 };
 
 
@@ -151,11 +146,6 @@ extern const char * const conn_state_str[];
 #define DEF_ACK_DEL_EXP 3
 #define DEF_MAX_ACK_DEL 25 // ms
 
-#ifndef NO_MIGRATION
-splay_head(cids_by_seq, cid);
-
-KHASH_INIT(cids_by_id, struct cid *, struct cid *, 1, hash_cid, kh_cid_cmp)
-#endif
 
 /// A QUIC connection.
 struct q_conn {
@@ -166,11 +156,10 @@ struct q_conn {
     sl_entry(q_conn) node_aq;   ///< For maintaining the accept queue.
     sl_entry(q_conn) node_embr; ///< For bound but unconnected connections.
 #endif
+    struct cids dcids; ///< Destination CID hash by sequence.
 #ifndef NO_MIGRATION
-    struct cids_by_seq dcids_by_seq; ///< Destination CID hash by sequence.
-    struct cids_by_seq scids_by_seq; ///< Source CID hash by sequence.
-    khash_t(cids_by_id) scids_by_id; ///< Source CID hash by ID.
-    struct w_sockaddr migr_peer;     ///< Peer's desired migration address.
+    struct cids scids;           ///< Source CID hash by sequence.
+    struct w_sockaddr migr_peer; ///< Peer's desired migration address.
     struct w_sock * migr_sock;
     struct w_iov_sq migr_txq;
 #endif
@@ -271,6 +260,8 @@ struct q_conn {
     uint_t in_data;      ///< Current inbound connection data.
     uint_t out_data;     ///< Current outbound connection data.
 
+    uint_t rpt_max; ///< Largest received "Retire Prior To" field
+
     epoch_t min_rx_epoch;
 
     uint8_t path_chlg_in[PATH_CHLG_LEN];
@@ -284,7 +275,12 @@ struct q_conn {
     struct w_sockopt sockopt; ///< Socket options.
     uint_t max_cid_seq_out;
 
+#if !HAVE_64BIT
+    uint8_t _unused[4];
+#endif
+
     struct cid odcid; ///< Original destination CID of first Initial.
+    struct cid oscid; ///< Original source CID of first Initial.
 
     struct w_iov_sq txq;
 
@@ -298,7 +294,7 @@ struct q_conn {
     uint8_t err_reason_len;
     char err_reason[MAX_ERR_REASON_LEN];
 #else
-    uint8_t _unused;
+    uint8_t _unused2;
 #endif
 
     uint16_t tok_len;
@@ -321,6 +317,9 @@ extern struct q_conn_sl c_embr;
 #else
 #define is_clnt(c) 1
 #endif
+
+
+#define hshk_done(c) (c)->pns[pn_hshk].abandoned
 
 
 extern struct q_conn_sl c_ready;
@@ -377,19 +376,7 @@ extern struct q_conn * new_conn(struct w_engine * const w,
 extern void __attribute__((nonnull)) free_conn(struct q_conn * const c);
 
 extern void __attribute__((nonnull))
-add_scid(struct q_conn * const c, struct cid * const id);
-
-extern void __attribute__((nonnull))
-add_dcid(struct q_conn * const c, const struct cid * const id);
-
-extern void __attribute__((nonnull))
 do_conn_fc(struct q_conn * const c, const uint16_t len);
-
-extern void __attribute__((nonnull))
-free_scid(struct q_conn * const c, struct cid * const id);
-
-extern void __attribute__((nonnull))
-free_dcid(struct q_conn * const c, struct cid * const id);
 
 extern void __attribute__((nonnull(1)))
 update_conf(struct q_conn * const c, const struct q_conn_conf * const conf);
@@ -400,6 +387,8 @@ get_conn_by_srt(uint8_t * const srt);
 
 extern void __attribute__((nonnull))
 conns_by_srt_ins(struct q_conn * const c, uint8_t * const srt);
+
+extern void __attribute__((nonnull)) conns_by_srt_del(uint8_t * const srt);
 #endif
 
 extern void __attribute__((nonnull)) rx(struct w_sock * const ws);
@@ -435,15 +424,13 @@ pn_for_epoch(struct q_conn * const c, const epoch_t e)
 }
 
 
-static inline int __attribute__((nonnull, no_instrument_function))
-cids_by_seq_cmp(const struct cid * const a, const struct cid * const b)
-{
-    return (a->seq > b->seq) - (a->seq < b->seq);
-}
-
 #ifndef NO_MIGRATION
-SPLAY_PROTOTYPE(cids_by_seq, cid, node_seq, cids_by_seq_cmp)
+extern void __attribute__((nonnull))
+conns_by_id_ins(struct q_conn * const c, struct cid * const id);
+
+extern void __attribute__((nonnull)) conns_by_id_del(struct cid * const id);
 #endif
+
 
 #ifndef NO_OOO_0RTT
 struct ooo_0rtt {
@@ -508,27 +495,4 @@ has_wnd(const struct q_conn * const c, const uint16_t len)
     }
 
     return is_clnt(c) ? true : has_pval_wnd(c, len);
-}
-
-
-static inline bool __attribute__((no_instrument_function,
-#ifndef NO_MIGRATION
-                                  nonnull
-#else
-                                  const
-#endif
-                                  )) needs_more_ncids(struct q_conn * const c
-#ifdef NO_MIGRATION
-                                                      __attribute__((unused))
-#endif
-)
-{
-#ifndef NO_MIGRATION
-    const struct cid * const max_scid =
-        splay_max(cids_by_seq, &c->scids_by_seq);
-    return splay_count(&c->scids_by_seq) < c->tp_peer.act_cid_lim ||
-           (max_scid && c->max_cid_seq_out < max_scid->seq);
-#else
-    return false;
-#endif
 }

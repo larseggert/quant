@@ -24,6 +24,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include <arpa/inet.h>
+#include <cinttypes>
 #include <cstdint>
 #include <fcntl.h>
 #include <libgen.h>
@@ -74,17 +75,27 @@ static inline uint64_t io(const uint64_t len)
     q_write(cs, &o, true);
 
     // read the data
-    struct w_iov_sq i = w_iov_sq_initializer(i);
-    struct q_stream * const ss = q_read(sc, &i, true);
-    if (likely(ss)) {
-        q_read_stream(ss, &i, true);
-        q_free_stream(ss);
-    }
-    q_free_stream(cs);
+    while (true) {
+        struct q_conn * ready;
+        q_ready(w, 0, &ready);
 
-    const uint64_t ilen = w_iov_sq_len(&i);
-    q_free(&i);
+        if (ready == sc) {
+            struct w_iov_sq i = w_iov_sq_initializer(i);
+            struct q_stream * const ss = q_read(sc, &i, true);
+            if (ss == nullptr)
+                continue;
+            if (q_peer_closed_stream(ss))
+                q_free_stream(ss);
+            const uint64_t ilen = w_iov_sq_len(&i);
+            ensure(ilen == len, "mismatch %" PRIu64 " %" PRIu64, len, ilen);
+            q_free(&i);
+            break;
+        }
+    }
+
+    q_stream_get_written(cs, &o);
     q_free(&o);
+    q_free_stream(cs);
 
 #ifndef NO_QINFO
     struct q_conn_info cci = {0};
@@ -94,7 +105,7 @@ static inline uint64_t io(const uint64_t len)
     // log(&cci, &sci);
 #endif
 
-    return ilen;
+    return len;
 }
 
 

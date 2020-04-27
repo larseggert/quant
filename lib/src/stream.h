@@ -36,14 +36,18 @@
 #include "quic.h"
 #include "tls.h"
 
+#ifdef DEBUG_STREAMS
+#include "cid.h"
+#endif
+
 
 #define STRM_FL_SRV 0x01
 #define STRM_FL_UNI 0x02
 
 #define INIT_STRM_DATA_BIDI 0xffff
 #define INIT_STRM_DATA_UNI 0x7ff
-#define INIT_MAX_UNI_STREAMS 3
-#define INIT_MAX_BIDI_STREAMS 3
+#define INIT_MAX_UNI_STREAMS 128
+#define INIT_MAX_BIDI_STREAMS 128
 
 #define STRM_STATE(k, v) k = v
 #define STRM_STATES                                                            \

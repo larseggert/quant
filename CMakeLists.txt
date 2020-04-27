@@ -32,7 +32,6 @@ set(CMAKE_REQUIRED_LINK_OPTIONS -L/usr/local/lib)
 check_symbol_exists(ProfilerStart gperftools/profiler.h HAVE_PROFILER)
 cmake_reset_check_state()
 
-include_directories(AFTER SYSTEM /usr/local/include)
 link_directories(AFTER /usr/local/lib)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
@@ -196,6 +195,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
         set(CLANG_TIDY_CHECKS *
             -cert-err58-cpp
             -cppcoreguidelines-avoid-magic-numbers
+            -cppcoreguidelines-init-variables
             -cppcoreguidelines-macro-usage
             -cppcoreguidelines-owning-memory
             -cppcoreguidelines-pro-bounds-array-to-pointer-decay

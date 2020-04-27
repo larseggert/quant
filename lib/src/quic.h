@@ -43,6 +43,14 @@
 
 #include <quant/quant.h>
 
+#ifdef HAVE_ASAN
+#include <sanitizer/asan_interface.h>
+#else
+#define ASAN_POISON_MEMORY_REGION(x, y)
+#define ASAN_UNPOISON_MEMORY_REGION(x, y)
+#endif
+
+#include "cid.h"
 #include "frame.h"
 #include "tree.h" // IWYU pragma: keep
 
@@ -54,15 +62,13 @@
 struct q_conn; // IWYU pragma: no_forward_declare q_conn
 
 
-// #define DEBUG_EXTRA ///< Set to log various extra details.
+// #define DEBUG_EXTRA   ///< Set to log various extra details.
 // #define DEBUG_STREAMS ///< Set to log stream scheduling details.
 // #define DEBUG_TIMERS  ///< Set to log timer details.
 // #define DEBUG_PROT    ///< Set to log packet protection/encryption details.
 
 #define DATA_OFFSET 48 ///< Offsets of stream frame payload data we TX.
 
-#define CID_LEN_MAX 20  ///< Maximum CID length allowed by spec.
-#define SRT_LEN 16      ///< Stateless reset token length allowed by spec.
 #define PATH_CHLG_LEN 8 ///< Length of a path challenge.
 #define MAX_TOK_LEN 166
 #define AEAD_LEN 16
@@ -103,30 +109,6 @@ struct q_conn; // IWYU pragma: no_forward_declare q_conn
 #define FMT_SID BLD YEL "%" PRId NRM
 
 
-struct cid {
-#ifndef NO_MIGRATION
-    splay_entry(cid) node_seq;
-#endif
-    uint_t seq; ///< Connection ID sequence number
-    uint_t rpt; ///< Retire prior to
-    /// XXX len must precede id for cid_cmp() over both to work
-    uint8_t len; ///< Connection ID length
-    /// XXX id must precede srt for rand_bytes() over both to work
-    uint8_t id[CID_LEN_MAX]; ///< Connection ID
-#ifndef NO_SRT_MATCHING
-    uint8_t srt[SRT_LEN]; ///< Stateless Reset Token
-    uint8_t has_srt : 1;  ///< Is the SRT field valid?
-#endif
-    uint8_t retired : 1; ///< Did we retire this CID?
-#ifndef NO_SRT_MATCHING
-    uint8_t : 6;
-#else
-    uint8_t : 7;
-#endif
-    uint8_t _unused[2];
-};
-
-
 struct pkt_hdr {
     struct cid dcid;  ///< Destination CID.
     struct cid scid;  ///< Source CID.
@@ -135,9 +117,7 @@ struct pkt_hdr {
     uint16_t hdr_len; ///< Length of entire QUIC header.
     uint32_t vers;    ///< QUIC version in long header.
     uint8_t flags;    ///< First (raw) byte of packet.
-    uint8_t type;     ///< Parsed packet type.
-    // we do not store any token of LH packets in the metadata anymore
-
+    uint8_t type;     ///< Parsed packet type. TODO: remove?
 #if HAVE_64BIT
     uint8_t _unused[6];
 #else
@@ -170,11 +150,8 @@ struct pkt_meta {
     dint_t max_strms_uni;     ///< MAX_STREAM_ID unidir limit, if sent.
     uint_t strm_data_blocked; ///< STREAM_DATA_BLOCKED value, if sent.
     uint_t data_blocked;      ///< DATA_BLOCKED value, if sent.
-    uint_t min_cid_seq; ///< Smallest NEq_CONNECTION_ID seq in pkt, if sent.
-
-#if !HAVE_64BIT
-    uint8_t _unused[4];
-#endif
+    uint_t min_cid_seq;    ///< Smallest NEW_CONNECTION_ID seq in pkt, if sent.
+    uint_t retire_cid_seq; ///< RETIRE_CONNECTION_ID value, if sent.
 
     // pm_cpy(false) starts copying from here:
     struct pn_space * pn; ///< Packet number space.
@@ -312,25 +289,9 @@ hex2str(const uint8_t * const src,
         const size_t len_dst);
 
 
-extern const char * __attribute__((nonnull(2)))
-cid2str(const struct cid * const cid, char * const dst, const size_t len_dst);
-
-
-#define hex_str_len(x) ((x)*2 + 1)
-
-#define CID_STR_LEN hex_str_len(2 * sizeof(uint_t) + CID_LEN_MAX + 1)
-
-extern char __cid_str[CID_STR_LEN];
 extern char __srt_str[hex_str_len(SRT_LEN)];
 extern char __tok_str[hex_str_len(MAX_TOK_LEN)];
 extern char __rit_str[hex_str_len(RIT_LEN)];
-
-#define cid_str(cid) cid2str((cid), __cid_str, sizeof(__cid_str))
-
-#define mk_cid_str(lvl, cid, str)                                              \
-    char str[DLEVEL >= (lvl) ? CID_STR_LEN : 1] = "";                          \
-    if (DLEVEL >= (lvl) && likely(cid))                                        \
-        cid2str((cid), str, sizeof(str));
 
 #define srt_str(srt) hex2str((srt), SRT_LEN, __srt_str, sizeof(__srt_str))
 
@@ -350,17 +311,23 @@ extern char __rit_str[hex_str_len(RIT_LEN)];
     ((conf) ? (conf)->val : ped(w)->default_conn_conf.val)
 
 
-extern void __attribute__((nonnull))
-mk_rand_cid(struct cid * const cid, const uint8_t len, const bool srt);
+#ifdef HAVE_ASAN
+#define poison_scratch(s, l)                                                   \
+    do {                                                                       \
+        ensure(!__asan_address_is_poisoned((s)), "scratch already poisoned");  \
+        ASAN_POISON_MEMORY_REGION((s), (l));                                   \
+    } while (0)
 
 
-static inline void __attribute__((nonnull))
-cid_cpy(struct cid * const dst, const struct cid * const src)
-{
-    memcpy((uint8_t *)dst + offsetof(struct cid, seq),
-           (const uint8_t *)src + offsetof(struct cid, seq),
-           sizeof(struct cid) - offsetof(struct cid, seq));
-}
+#define unpoison_scratch(s, l)                                                 \
+    do {                                                                       \
+        ensure(__asan_address_is_poisoned((s)), "scratch already unpoisoned"); \
+        ASAN_UNPOISON_MEMORY_REGION((s), (l));                                 \
+    } while (0)
+#else
+#define poison_scratch(s, l)
+#define unpoison_scratch(s, l)
+#endif
 
 
 static inline void __attribute__((nonnull))

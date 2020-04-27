@@ -44,6 +44,7 @@
 #include <warpcore/warpcore.h>
 
 #include "bitset.h"
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "frame.h"
@@ -369,16 +370,11 @@ enc_other_frames(
     }
 
     if (c->tx_retire_cid && can_enc(pos, end, m, FRM_RTR, true)) {
-        struct cid * rcid = splay_min(cids_by_seq, &c->dcids_by_seq);
-        while (rcid && rcid->seq < c->dcid->seq) {
-            struct cid * const next =
-                splay_next(cids_by_seq, &c->dcids_by_seq, rcid);
-            if (rcid->retired) {
-                enc_retire_cid_frame(ci, pos, end, m, rcid);
-                free_dcid(c, rcid);
-            }
-            rcid = next;
-        }
+        struct cid * id = 0;
+        struct cid * tmp = 0;
+        sl_foreach_safe (id, &c->dcids.ret, next, tmp)
+            if (id->seq < c->dcid->seq)
+                enc_retire_cid_frame(ci, pos, end, m, id->seq);
     }
 
     if (c->tx_path_chlg && can_enc(pos, end, m, FRM_PCL, true))
@@ -386,7 +382,7 @@ enc_other_frames(
 
     while (c->tx_ncid && can_enc(pos, end, m, FRM_CID, false)) {
         enc_new_cid_frame(ci, pos, end, m);
-        c->tx_ncid = needs_more_ncids(c);
+        c->tx_ncid = need_more_cids(&c->scids, c->tp_peer.act_cid_lim);
     }
 #endif
 
@@ -773,11 +769,13 @@ tx:;
 bool dec_pkt_hdr_beginning(struct w_iov * const xv,
                            struct w_iov * const v,
                            struct pkt_meta * const m,
+                           struct w_iov_sq * const x,
                            const bool is_clnt,
                            uint8_t * const tok,
                            uint16_t * const tok_len,
                            uint8_t * const rit,
-                           const uint8_t dcid_len)
+                           const uint8_t dcid_len,
+                           bool * decoal)
 
 {
     const uint8_t * pos = xv->buf;
@@ -868,6 +866,26 @@ bool dec_pkt_hdr_beginning(struct w_iov * const xv,
 
 done:
     m->hdr.hdr_len = (uint16_t)(pos - xv->buf);
+
+    if (unlikely(is_lh(m->hdr.flags)) && m->hdr.type != LH_RTRY &&
+        m->hdr.vers) {
+        // check if we need to decoal
+        const uint16_t pkt_len = m->hdr.hdr_len + m->hdr.len;
+
+        // check for coalesced packet
+        *decoal = pkt_len < xv->len;
+        if (unlikely(*decoal)) {
+            // allocate new w_iov for coalesced packet and copy it over
+            struct w_iov * const dup = dup_iov(xv, 0, pkt_len);
+            // adjust length of first packet
+            xv->len = pkt_len;
+            // rx() has already removed xv from x, so just insert dup at head
+            sq_insert_head(x, dup, next);
+            warn(DBG, "split out coalesced %u-byte %s pkt", dup->len,
+                 pkt_type_str(*dup->buf, &dup->buf[1]));
+        }
+    }
+
     return true;
 }
 
@@ -1013,42 +1031,55 @@ struct q_conn * is_srt(const struct w_iov * const xv
 bool dec_pkt_hdr_remainder(struct w_iov * const xv,
                            struct w_iov * const v,
                            struct pkt_meta * const m,
-                           struct q_conn * const c,
-                           struct w_iov_sq * const x,
-                           bool * const decoal)
+                           struct q_conn * const c)
 {
-    *decoal = false;
+    bool did_key_flip = false;
+    const bool prev_kyph = c->pns[pn_data].data.in_kyph;
+    uint8_t prev_secret[2][PTLS_MAX_DIGEST_SIZE];
+    const ptls_cipher_suite_t * cs = 0;
+
     const struct cipher_ctx * ctx = which_cipher_ctx_in(c, m, false);
     if (unlikely(ctx->header_protection == 0))
         return false;
 
     // we can now undo the packet protection
     if (unlikely(undo_hp(xv, m, ctx) == false))
-        return is_srt(xv, m);
+        goto check_srt;
 
     // we can now try and decrypt the packet
     struct pn_space * const pn = &c->pns[pn_data];
     struct pn_data * const pnd = &pn->data;
     if (likely(is_lh(m->hdr.flags) == false) &&
         unlikely(is_set(SH_KYPH, m->hdr.flags) != pnd->in_kyph)) {
-        if (pnd->out_kyph == pnd->in_kyph)
+        if (pnd->out_kyph == pnd->in_kyph) {
             // this is a peer-initiated key phase flip
-            flip_keys(c, false);
-        else
+            cs = ptls_get_cipher(c->tls.t);
+            if (unlikely(cs == 0)) {
+                warn(ERR, "cannot obtain cipher suite");
+                return false;
+            }
+            // save the old keying material in case we gotta rollback
+            memcpy(prev_secret[0], c->tls.secret[0], cs->hash->digest_size);
+            memcpy(prev_secret[1], c->tls.secret[1], cs->hash->digest_size);
+            // now, flip
+            flip_keys(c, false, cs);
+            did_key_flip = true;
+        } else
             // the peer switched to a key phase that we flipped
             pnd->in_kyph = pnd->out_kyph;
     }
 
     ctx = which_cipher_ctx_in(c, m, true);
     if (unlikely(ctx->aead == 0))
-        return is_srt(xv, m);
+        goto check_srt;
 
-    const uint16_t pkt_len = is_lh(m->hdr.flags) ? m->hdr.hdr_len + m->hdr.len -
-                                                       pkt_nr_len(m->hdr.flags)
-                                                 : xv->len;
+    const uint16_t pkt_len =
+        unlikely(is_lh(m->hdr.flags))
+            ? m->hdr.hdr_len + m->hdr.len - pkt_nr_len(m->hdr.flags)
+            : xv->len;
     const uint16_t ret = dec_aead(xv, v, m, pkt_len, ctx);
     if (unlikely(ret == 0))
-        return is_srt(xv, m);
+        goto check_srt;
 
     const uint8_t rsvd_bits =
         m->hdr.flags & (is_lh(m->hdr.flags) ? LH_RSVD_MASK : SH_RSVD_MASK);
@@ -1059,21 +1090,7 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
         return false;
     }
 
-    if (unlikely(is_lh(m->hdr.flags))) {
-        // check for coalesced packet
-        if (unlikely(pkt_len < xv->len)) {
-            *decoal = true;
-            // allocate new w_iov for coalesced packet and copy it over
-            struct w_iov * const dup = dup_iov(xv, 0, pkt_len);
-            // adjust length of first packet
-            xv->len = pkt_len;
-            // rx() has already removed xv from x, so just insert dup at head
-            sq_insert_head(x, dup, next);
-            warn(DBG, "split out coalesced %u-byte %s pkt", dup->len,
-                 pkt_type_str(*dup->buf, &dup->buf[1]));
-        }
-
-    } else {
+    if (likely(is_lh(m->hdr.flags) == false)) {
         // check if a key phase flip has been verified
         const bool v_kyph = is_set(SH_KYPH, m->hdr.flags);
         if (unlikely(v_kyph != pnd->in_kyph))
@@ -1095,8 +1112,9 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
     }
 
     // packet protection verified OK
-    if (diet_find(&pn_for_pkt_type(c, m->hdr.type)->recv_all, m->hdr.nr))
-        return is_srt(xv, m);
+    if (unlikely(
+            diet_find(&pn_for_pkt_type(c, m->hdr.type)->recv_all, m->hdr.nr)))
+        goto check_srt;
 
     // check if we need to send an immediate ACK
     if ((unlikely(diet_empty(&m->pn->recv_all) == false &&
@@ -1106,4 +1124,17 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
         m->pn->imm_ack = true;
 
     return true;
+
+check_srt:
+    if (unlikely(did_key_flip)) {
+#ifdef DEBUG_PROT
+        warn(DBG, "crypto fail, undoing key flip %u -> %u",
+             c->pns[pn_data].data.in_kyph, prev_kyph);
+#endif
+        c->pns[pn_data].data.out_kyph = c->pns[pn_data].data.in_kyph =
+            prev_kyph;
+        memcpy(c->tls.secret[0], prev_secret[0], cs->hash->digest_size);
+        memcpy(c->tls.secret[1], prev_secret[1], cs->hash->digest_size);
+    }
+    return is_srt(xv, m);
 }

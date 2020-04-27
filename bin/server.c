@@ -47,7 +47,8 @@
 
 #include <quant/quant.h>
 
-struct q_conn;
+struct q_conn;   // IWYU pragma: no_forward_declare q_conn
+struct q_stream; // IWYU pragma: no_forward_declare q_stream
 
 
 #ifndef NDEBUG
@@ -101,6 +102,9 @@ struct cb_data {
 };
 
 
+KHASH_MAP_INIT_INT(strm_cache, struct w_iov_sq *)
+
+
 static bool send_err(struct cb_data * const d, const uint16_t code)
 {
     const char * msg;
@@ -144,8 +148,8 @@ static int serve_cb(http_parser * parser, const char * at, size_t len)
     (void)parser;
     struct cb_data * const d = parser->data;
     char cid_str[64];
-    q_cid(d->c, cid_str, sizeof(cid_str));
-    warn(INF, "conn %s str %" PRId " serving URL %.*s", cid_str, q_sid(d->s),
+    q_cid_str(d->c, cid_str, sizeof(cid_str));
+    warn(INF, "conn %s strm %" PRId " serving URL %.*s", cid_str, q_sid(d->s),
          (int)len, at);
 
     struct http_parser_url u = {0};
@@ -155,7 +159,7 @@ static int serve_cb(http_parser * parser, const char * at, size_t len)
         return send_err(d, 400);
     }
 
-    char path[MAXPATHLEN] = ".";
+    char path[8192] = ".";
     if ((u.field_set & (1 << UF_PATH)) == 0)
         return send_err(d, 400);
 
@@ -232,6 +236,18 @@ static int serve_cb(http_parser * parser, const char * at, size_t len)
     q_write_file(d->w, d->s, f, (uint32_t)info.st_size, true);
 
     return 0;
+}
+
+
+static uint32_t __attribute__((nonnull))
+strm_key(struct q_conn * const c, const struct q_stream * const s)
+{
+    uint8_t buf[sizeof(uint_t) + 32];
+    const uint_t sid = q_sid(s);
+    memcpy(buf, &sid, sizeof(uint_t));
+    size_t len = sizeof(buf) - sizeof(uint_t);
+    q_cid(c, &buf[sizeof(uint_t)], &len);
+    return fnv1a_32(buf, len + sizeof(uint_t));
 }
 
 
@@ -325,18 +341,19 @@ int main(int argc, char * argv[])
     const int dir_fd = open(dir, O_RDONLY | O_CLOEXEC);
     ensure(dir_fd != -1, "%s does not exist", dir);
 
-    struct w_engine * const w = q_init(
-        ifname, &(const struct q_conf){.conn_conf =
-                                           &(struct q_conn_conf){
-                                               .idle_timeout = timeout,
-                                               .enable_spinbit = true,
-                                           },
-                                       .qlog_dir = *qlog_dir ? qlog_dir : 0,
-                                       .tls_log = *tls_log ? tls_log : 0,
-                                       .force_retry = retry,
-                                       .num_bufs = num_bufs,
-                                       .tls_cert = cert,
-                                       .tls_key = key});
+    struct w_engine * const w =
+        q_init(ifname,
+               &(const struct q_conf){
+                   .conn_conf =
+                       &(struct q_conn_conf){.idle_timeout = timeout,
+                                             .enable_spinbit = true,
+                                             .enable_udp_zero_checksums = true},
+                   .qlog_dir = *qlog_dir ? qlog_dir : 0,
+                   .tls_log = *tls_log ? tls_log : 0,
+                   .force_retry = retry,
+                   .num_bufs = num_bufs,
+                   .tls_cert = cert,
+                   .tls_key = key});
     for (size_t i = 0; i < num_ports; i++) {
         for (uint16_t idx = 0; idx < w->addr_cnt; idx++) {
 #ifndef NDEBUG
@@ -349,6 +366,7 @@ int main(int argc, char * argv[])
         }
     }
 
+    khash_t(strm_cache) sc = {0};
     bool first_conn = true;
     http_parser_settings settings = {.on_url = serve_cb};
 
@@ -356,6 +374,7 @@ int main(int argc, char * argv[])
         struct q_conn * c;
         const bool have_active =
             q_ready(w, first_conn ? 0 : timeout * NS_PER_S, &c);
+        // warn(ERR, "%u %u", first_conn, have_active);
         if (c == 0) {
             if (have_active == false && timeout)
                 break;
@@ -364,76 +383,109 @@ int main(int argc, char * argv[])
         first_conn = false;
 
         // do we need to q_accept?
-        if (q_is_new_serv_conn(c))
+        if (q_is_new_serv_conn(c)) {
             q_accept(w, 0);
+            continue;
+        }
 
         if (q_is_conn_closed(c)) {
             q_close(c, 0, 0);
             continue;
         }
 
-        // do we need to handle a request?
-        struct cb_data d = {.c = c, .w = w, .dir = dir_fd};
-        http_parser parser = {.data = &d};
-
-    again:
-        http_parser_init(&parser, HTTP_REQUEST);
+    again:;
         struct w_iov_sq q = w_iov_sq_initializer(q);
         struct q_stream * s = q_read(c, &q, false);
 
-        if (sq_empty(&q)) {
-            if (s && q_is_stream_closed(s)) {
-                // retrieve the TX'ed request
-                q_stream_get_written(s, &q);
-#ifndef NDEBUG
-                // if we wrote a "benchmark objects", increase logging
-                const uint_t len = w_iov_sq_len(&q);
-                if (is_bench_obj(len) && --bench_cnt == 0) {
-                    util_dlevel = ini_dlevel;
-                    warn(NTE, "increasing log level after benchmark object "
-                              "transfer");
-                }
-#endif
-                q_free_stream(s);
-                q_free(&q);
-                goto again;
-            }
+        if (s == 0)
             continue;
-        }
 
         if (q_is_uni_stream(s)) {
             warn(NTE, "can't serve request on uni stream: %.*s",
                  sq_first(&q)->len, sq_first(&q)->buf);
+            goto next;
+        }
 
-        } else {
-            d.s = s;
-            d.af = sq_first(&q)->wv_af;
+        if (q_is_stream_closed(s))
+            goto next;
+
+        khiter_t k = kh_get(strm_cache, &sc, strm_key(c, s));
+        struct w_iov_sq * sq =
+            (kh_size(&sc) == 0 || k == kh_end(&sc) ? 0 : kh_val(&sc, k));
+
+        if (sq == 0) {
+            // this is a new stream, insert into stream cache
+            sq = calloc(1, sizeof(*sq));
+            ensure(sq, "calloc failed");
+            sq_init(sq);
+            int err;
+            k = kh_put(strm_cache, &sc, strm_key(c, s), &err);
+            ensure(err >= 1, "inserted returned %d", err);
+            kh_val(&sc, k) = sq;
+        }
+        sq_concat(sq, &q);
+
+        if (q_peer_closed_stream(s) && !sq_empty(sq)) {
+            // do we need to handle a request?
+            char url[8192];
+            size_t url_len = 0;
             struct w_iov * v;
-            sq_foreach (v, &q, next) {
-                if (v->len == 0)
-                    // skip empty bufs (such as pure FINs)
-                    continue;
+            sq_foreach (v, sq, next) {
+                memcpy(&url[url_len], v->buf, v->len);
+                url_len += v->len;
+            }
 
-                const size_t parsed = http_parser_execute(
-                    &parser, &settings, (char *)v->buf, v->len);
-                if (parsed != v->len) {
-                    warn(ERR, "HTTP parser error: %.*s", (int)(v->len - parsed),
-                         &v->buf[parsed]);
-                    hexdump(v->buf, v->len);
-                    // XXX the strnlen() test is super-hacky
-                    if (strnlen((char *)v->buf, v->len) == v->len)
-                        send_err(&d, 400);
-                    else
-                        send_err(&d, 505);
-                    ret = 1;
-                }
-                q_free(&q);
-                goto again;
+            http_parser parser = {
+                .data = &(struct cb_data){.c = c,
+                                          .w = w,
+                                          .dir = dir_fd,
+                                          .s = s,
+                                          .af = sq_first(sq)->wv_af}};
+            http_parser_init(&parser, HTTP_REQUEST);
+
+            const size_t parsed =
+                http_parser_execute(&parser, &settings, url, url_len);
+            if (parsed != url_len) {
+                warn(ERR, "HTTP parser error: %.*s", (int)(url_len - parsed),
+                     &url[parsed]);
+                // XXX the strnlen() test is super-hacky
+                if (strnlen(url, url_len) == url_len)
+                    send_err(parser.data, 400);
+                else
+                    send_err(parser.data, 505);
+                ret = 1;
             }
         }
+
+    next:
+        if (q_is_stream_closed(s)) {
+            // retrieve the TX'ed request
+            q_stream_get_written(s, &q);
+#ifndef NDEBUG
+            // if we wrote a "benchmark objects", increase logging
+            const uint_t len = w_iov_sq_len(&q);
+            if (is_bench_obj(len) && --bench_cnt == 0) {
+                util_dlevel = ini_dlevel;
+                warn(NTE, "increasing log level after benchmark object "
+                          "transfer");
+            }
+#endif
+            k = kh_get(strm_cache, &sc, strm_key(c, s));
+            ensure(kh_size(&sc) && k != kh_end(&sc), "found");
+            sq = kh_val(&sc, k);
+            q_free(sq);
+            free(sq);
+            kh_del(strm_cache, &sc, k);
+            q_free_stream(s);
+            q_free(&q);
+        }
+        goto again;
     }
 
     q_cleanup(w);
-    warn(DBG, "%s exiting", basename(argv[0]));
+    struct w_iov_sq * sq;
+    kh_foreach_value(&sc, sq, { free(sq); });
+    kh_release(strm_cache, &sc);
+    warn(DBG, "%s exiting with %d", basename(argv[0]), ret);
     return ret;
 }

@@ -1,6 +1,5 @@
 ---
-dist: xenial
-sudo: false
+dist: bionic
 
 language: cpp
 os:
@@ -29,16 +28,5 @@ addons:
     build_command_prepend: cd $TRAVIS_BUILD_DIR && cmake .
     build_command:  make
     branch_pattern: coverity
-
-before_install:
-  # manually install latest openssl
-  - |
-    travis_retry wget \
-      -q https://www.openssl.org/source/openssl-1.1.1b.tar.gz
-    tar xf openssl-1.1.1b.tar.gz
-    cd openssl-1.1.1b
-    ./config --openssldir=/usr/local
-    sudo make -s install > /dev/null
-    sudo ldconfig /usr/local/lib
 
 script: exit 0

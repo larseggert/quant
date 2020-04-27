@@ -45,6 +45,7 @@
 #include <timeout.h>
 
 #include "bitset.h"
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "frame.h"
@@ -402,7 +403,6 @@ dec_stream_or_crypto_frame(const uint8_t type,
             do_stream_fc(m->strm, 0);
             do_conn_fc(c, 0);
             c->have_new_data = true;
-            maybe_api_return(q_read, c, 0);
             maybe_api_return(q_read_stream, c, m->strm);
         }
         goto done;
@@ -529,14 +529,14 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
     const uint_t ade = (m->hdr.type == LH_INIT || m->hdr.type == LH_HSHK)
                            ? DEF_ACK_DEL_EXP
                            : c->tp_peer.ack_del_exp;
-    uint_t ack_delay = ack_delay_raw << ade;
+    uint_t ack_delay = (uint_t)(ack_delay_raw << ade);
 
     if (unlikely(ack_delay_raw &&
                  (m->hdr.type == LH_INIT || m->hdr.type == LH_HSHK)))
         warn(WRN,
              "ack_delay %" PRIu " usec is not zero in Initial or Handshake ACK",
              ack_delay);
-    else if (unlikely(ack_delay > 1.5 * c->tp_peer.max_ack_del * US_PER_MS))
+    else if (unlikely(ack_delay > c->tp_peer.max_ack_del * US_PER_MS))
         warn(WRN, "ack_delay %" PRIu " > max_ack_del %" PRIu, ack_delay,
              c->tp_peer.max_ack_del * US_PER_MS);
 
@@ -711,6 +711,7 @@ dec_close_frame(const uint8_t type,
     const uint16_t act_reas_len =
         (uint16_t)MIN(reas_len, (uint16_t)(end - *pos));
     ensure(act_reas_len <= ped(c->w)->scratch_len, "scratch insufficient");
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 
     if (act_reas_len)
         decb_chk(ped(c->w)->scratch, pos, end, act_reas_len, c, type);
@@ -727,6 +728,7 @@ dec_close_frame(const uint8_t type,
                      " rlen=%" PRIu " reason=%s%.*s" NRM,
              type, err_code ? RED : NRM, err_code, reas_len,
              err_code ? RED : NRM, (int)reas_len, ped(c->w)->scratch);
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 
     if (unlikely(reas_len != act_reas_len))
         err_close_return(c, ERR_FRAME_ENC, type, "illegal reason len");
@@ -996,9 +998,10 @@ dec_new_cid_frame(const uint8_t ** pos,
                        .has_srt = true
 #endif
     };
+    uint_t rpt = 0;
 
     decv_chk(&dcid.seq, pos, end, c, FRM_CID);
-    decv_chk(&dcid.rpt, pos, end, c, FRM_CID);
+    decv_chk(&rpt, pos, end, c, FRM_CID);
     dec1_chk(&dcid.len, pos, end, c, FRM_CID);
 
 #ifndef NO_SRT_MATCHING
@@ -1015,7 +1018,7 @@ dec_new_cid_frame(const uint8_t ** pos,
 #if !defined(NO_MIGRATION) || !defined(NDEBUG)
     const bool dup =
 #ifndef NO_MIGRATION
-        splay_find(cids_by_seq, &c->dcids_by_seq, &dcid);
+        cid_by_seq(&c->dcids.act, dcid.seq) != 0;
 #else
         false;
 #endif
@@ -1024,30 +1027,42 @@ dec_new_cid_frame(const uint8_t ** pos,
     warn(INF,
          FRAM_IN "NEW_CONNECTION_ID" NRM " seq=%" PRIu " rpt=%" PRIu
                  " len=%u dcid=%s srt=%s%s",
-         dcid.seq, dcid.rpt, dcid.len, cid_str(&dcid), srt_str(srt),
+         dcid.seq, rpt, dcid.len, cid_str(&dcid), srt_str(srt),
          dup ? " [" RED "dup" NRM "]" : "");
 
 #ifndef NO_MIGRATION
     const uint_t max_act_cids =
         c->tp_mine.act_cid_lim + (c->tp_peer.pref_addr.cid.len ? 1 : 0);
-    if (likely(dup == false) &&
-        unlikely(splay_count(&c->dcids_by_seq) > max_act_cids))
+    if (likely(dup == false) && unlikely(cid_cnt(&c->dcids) > max_act_cids))
         err_close_return(c, ERR_CONNECTION_ID_LIMIT, FRM_CID,
                          "illegal seq %" PRIu " (have %" PRIu "/%" PRIu ")",
-                         dcid.seq, splay_count(&c->dcids_by_seq), max_act_cids);
+                         dcid.seq, cid_cnt(&c->dcids), max_act_cids);
 
-    if (unlikely(dcid.rpt > dcid.seq))
+    if (unlikely(rpt > dcid.seq))
         err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID,
-                         "illegal rpt %" PRIu, dcid.rpt);
+                         "illegal rpt %" PRIu, rpt);
 
     if (unlikely(dcid.len > CID_LEN_MAX))
         err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID, "illegal len %u",
                          dcid.len);
 
-    if (dup == false)
-        add_dcid(c, &dcid);
+    if (rpt > c->rpt_max) {
+        retire_prior_to(&c->dcids, rpt);
+        c->rpt_max = rpt;
+    } else if (c->rpt_max)
+        warn(INF, "rpt %" PRIu " <= prev max %" PRIu ", ignoring", rpt,
+             c->rpt_max);
 
-        // FIXME: retire cids
+    if (dup == false) {
+#ifndef NO_SRT_MATCHING
+        struct cid * const ndcid =
+#endif
+            cid_ins(&c->dcids, &dcid);
+#ifndef NO_SRT_MATCHING
+        conns_by_srt_ins(c, ndcid->srt);
+#endif
+    }
+
 #else
     err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID,
                      "migration disabled but got NEW_CONNECTION_ID");
@@ -1093,27 +1108,26 @@ dec_retire_cid_frame(const uint8_t ** pos,
                      const struct pkt_meta * const m)
 {
     struct q_conn * const c = m->pn->c;
-    struct cid which = {.seq = 0};
-    decv_chk(&which.seq, pos, end, c, FRM_RTR);
+    uint_t seq = 0;
+    decv_chk(&seq, pos, end, c, FRM_RTR);
 
-    warn(INF, FRAM_IN "RETIRE_CONNECTION_ID" NRM " seq=%" PRIu, which.seq);
+    warn(INF, FRAM_IN "RETIRE_CONNECTION_ID" NRM " seq=%" PRIu, seq);
 
 #ifndef NO_MIGRATION
-    struct cid * const scid = splay_find(cids_by_seq, &c->scids_by_seq, &which);
+    struct cid * const scid = cid_by_seq(&c->scids.act, seq);
     if (unlikely(scid == 0)) {
-        warn(INF, "no cid seq %" PRIu, which.seq);
+        warn(INF, "no cid seq %" PRIu, seq);
         goto done;
     }
     // cppcheck-suppress nullPointerRedundantCheck
     else if (c->scid->seq == scid->seq) {
-        struct cid * const next_scid =
-            splay_next(cids_by_seq, &c->scids_by_seq, scid);
+        struct cid * const next_scid = next_cid(&c->scids, scid->seq);
         if (unlikely(next_scid == 0))
             err_close_return(c, ERR_INTERNAL, FRM_RTR, "no next scid");
         c->scid = next_scid;
     }
-
-    free_scid(c, scid);
+    conns_by_id_del(scid);
+    cid_del(&c->scids, scid);
 
     // rx of RETIRE_CONNECTION_ID means we should send more
     c->tx_ncid = true;
@@ -1175,7 +1189,6 @@ bool dec_frames(struct q_conn * const c,
     const uint8_t * pos = v->buf + m->hdr.hdr_len;
     const uint8_t * start = v->buf;
     const uint8_t * end = v->buf + v->len;
-    const uint8_t * pad_start = 0;
 
 #if !defined(NDEBUG) && !defined(FUZZING) && defined(FUZZER_CORPUS_COLLECTION)
     // when called from the fuzzer, v->wv_af is zero
@@ -1188,15 +1201,14 @@ bool dec_frames(struct q_conn * const c,
 
         // special-case for optimized parsing of padding ranges
         if (type == FRM_PAD) {
-            if (unlikely(pad_start == 0))
-                pad_start = pos;
-            continue;
-        }
-        if (pad_start) {
+            const uint8_t * const pad_start = pos;
+            while (likely(type == FRM_PAD && pos < end))
+                type = *(pos++);
             const uint16_t pad_len = (uint16_t)(pos - pad_start + 1);
             track_frame(m, ci, FRM_PAD, pad_len);
             log_pad(pad_len);
-            pad_start = 0;
+            if (pos == end)
+                break;
         }
 
         // check that frame type is allowed in this pkt type
@@ -1249,7 +1261,8 @@ bool dec_frames(struct q_conn * const c,
             if (unlikely(bit_overlap(FRM_MAX, &m->frms, &cry_or_str)) &&
                 m->strm) {
                 // already had at least one stream or crypto frame in this
-                // packet with non-duplicate data, so generate (another) copy
+                // packet with non-duplicate data, so generate (another)
+                // copy
 #ifdef DEBUG_EXTRA
                 warn(DBG, "addtl stream or crypto frame, copy");
 #endif
@@ -1362,12 +1375,6 @@ bool dec_frames(struct q_conn * const c,
 
         // record this frame type in the meta data
         track_frame(m, ci, type, 1);
-    }
-
-    if (pad_start) {
-        const uint16_t pad_len = (uint16_t)(pos - pad_start + 1);
-        track_frame(m, ci, FRM_PAD, pad_len);
-        log_pad(pad_len);
     }
 
     if (m->strm_data_pos) {
@@ -1498,7 +1505,7 @@ bool enc_ack_frame(struct q_conn_info * const ci,
                            ? DEF_ACK_DEL_EXP
                            : c->tp_mine.ack_del_exp;
     const uint64_t ack_delay =
-        NS_TO_US(loop_now() - diet_timestamp(first_rng)) >> ade;
+        NS_TO_US(w_now() - diet_timestamp(first_rng)) >> ade;
     encv_chk(pos, end, ack_delay);
 
     const uint_t ack_rng_cnt = diet_cnt(&pn->recv) - 1;
@@ -1618,7 +1625,8 @@ void enc_stream_or_crypto_frame(uint8_t ** pos,
             type |= F_STREAM_OFF;
         encv(pos, end, m->strm_off);
     }
-    if (m->strm_data_len != s->c->rec.max_pkt_size - AEAD_LEN - DATA_OFFSET) {
+    if (m->strm_data_len != s->c->rec.max_pkt_size - AEAD_LEN - DATA_OFFSET ||
+        unlikely(!enc_strm)) {
         if (likely(enc_strm))
             type |= F_STREAM_LEN;
         encv(pos, end, m->strm_data_len);
@@ -1851,14 +1859,15 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
 {
     struct q_conn * const c = m->pn->c;
 
-    const struct cid * const max_scid =
-        splay_max(cids_by_seq, &c->scids_by_seq);
-    const struct cid * const min_scid =
-        splay_min(cids_by_seq, &c->scids_by_seq);
-    c->max_cid_seq_out = MAX(min_scid->seq, c->max_cid_seq_out + 1);
+    const uint_t max_scid = max_seq(&c->scids);
+    const uint_t min_scid = min_seq(&c->scids);
+    warn(ERR, "max_scid %" PRIu " min_scid %" PRIu " max_cid_seq_out %" PRIu,
+         max_scid, min_scid, c->max_cid_seq_out);
+    c->max_cid_seq_out = MAX(min_scid, c->max_cid_seq_out + 1);
     struct cid ncid = {.seq = c->max_cid_seq_out};
 
-    // FIXME: add rpt
+    // FIXME: send an actual rpt
+    uint_t rpt = 0;
 
 #ifndef NO_SRT_MATCHING
     uint8_t * srt;
@@ -1867,10 +1876,10 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
 #endif
 
     struct cid * enc_cid = &ncid;
-    if (max_scid && ncid.seq <= max_scid->seq) {
-        enc_cid = splay_find(cids_by_seq, &c->scids_by_seq, &ncid);
-        ensure(enc_cid, "max_scid->seq %" PRIu " ncid.seq %" PRIu,
-               max_scid->seq, ncid.seq);
+    if (ncid.seq <= max_scid) {
+        enc_cid = cid_by_seq(&c->scids.act, ncid.seq);
+        ensure(enc_cid, "max_scid %" PRIu " ncid.seq %" PRIu, max_scid,
+               ncid.seq);
 #ifndef NO_SRT_MATCHING
         srt = enc_cid->srt;
 #endif
@@ -1879,7 +1888,7 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
                     is_clnt(c) ? ped(c->w)->conf.client_cid_len
                                : ped(c->w)->conf.server_cid_len,
                     true);
-        add_scid(c, &ncid);
+        conns_by_id_ins(c, cid_ins(&c->scids, &ncid));
 #ifndef NO_SRT_MATCHING
         srt = ncid.srt;
 #endif
@@ -1889,7 +1898,7 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
 
     enc1(pos, end, FRM_CID);
     encv(pos, end, enc_cid->seq);
-    encv(pos, end, enc_cid->rpt);
+    encv(pos, end, rpt);
     enc1(pos, end, enc_cid->len);
     encb(pos, end, enc_cid->id, enc_cid->len);
     encb(pos, end, srt, SRT_LEN);
@@ -1897,8 +1906,8 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
     warn(INF,
          FRAM_OUT "NEW_CONNECTION_ID" NRM " seq=%" PRIu " rpt=%" PRIu
                   " len=%u cid=%s srt=%s %s",
-         enc_cid->seq, enc_cid->rpt, enc_cid->len, cid_str(enc_cid),
-         srt_str(srt), enc_cid == &ncid ? "" : BLD REV GRN "[RTX]" NRM);
+         enc_cid->seq, rpt, enc_cid->len, cid_str(enc_cid), srt_str(srt),
+         enc_cid == &ncid ? "" : BLD REV GRN "[RTX]" NRM);
 
     track_frame(m, ci, FRM_CID, 1);
 }
@@ -1928,14 +1937,15 @@ void enc_retire_cid_frame(struct q_conn_info * const ci,
                           uint8_t ** pos,
                           const uint8_t * const end,
                           struct pkt_meta * const m,
-                          struct cid * const dcid)
+                          const uint_t seq)
 {
     enc1(pos, end, FRM_RTR);
-    encv(pos, end, dcid->seq);
+    encv(pos, end, seq);
 
-    warn(INF, FRAM_OUT "RETIRE_CONNECTION_ID" NRM " seq=%" PRIu, dcid->seq);
+    warn(INF, FRAM_OUT "RETIRE_CONNECTION_ID" NRM " seq=%" PRIu, seq);
 
     m->pn->c->tx_retire_cid = false;
+    m->retire_cid_seq = seq;
     track_frame(m, ci, FRM_RTR, 1);
 }
 #endif

@@ -45,6 +45,7 @@ WARP_SRC+=\
 	warpcore/config.c
 
 QUANT_SRC+=\
+	lib/src/cid.c \
 	lib/src/conn.c \
 	lib/src/diet.c \
 	lib/src/frame.c \

@@ -32,6 +32,7 @@
 
 #include <quant/quant.h>
 
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "quic.h"
@@ -251,9 +252,9 @@ void do_stream_id_fc(struct q_conn * const c,
 {
     if (local) {
         // this is a local stream
-        if (bidi)
+        if (bidi && c->sid_blocked_bidi == false)
             c->sid_blocked_bidi = (cnt == c->tp_peer.max_strms_bidi);
-        else
+        else if (c->sid_blocked_uni == false)
             c->sid_blocked_uni =
                 (c->tp_peer.max_strms_uni && cnt == c->tp_peer.max_strms_uni);
         return;

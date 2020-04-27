@@ -52,6 +52,10 @@ foreach(TARGET ${TARGETS})
       picotls-minicrypto
       picotls-openssl
     )
+    if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang" AND
+       CMAKE_C_COMPILER_VERSION VERSION_GREATER 9)
+      target_compile_options(${TARGET} PRIVATE -Wno-poison-system-directories)
+    endif()
   endif()
 
   target_include_directories(${TARGET}

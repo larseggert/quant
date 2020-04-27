@@ -37,6 +37,7 @@
 #include <quant/quant.h>
 
 #include "bitset.h"
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "frame.h"
@@ -136,11 +137,11 @@ void log_cc(struct q_conn * const c)
              delta_in_flight, c->rec.cur.cwnd,
              delta_cwnd > 0 ? GRN : delta_cwnd < 0 ? RED : "", delta_cwnd,
              ssthresh, delta_ssthresh > 0 ? GRN : delta_ssthresh < 0 ? RED : "",
-             delta_ssthresh, c->rec.cur.srtt / (float)US_PER_S,
+             delta_ssthresh, (float)c->rec.cur.srtt / US_PER_S,
              delta_srtt > 0 ? GRN : delta_srtt < 0 ? RED : "",
-             delta_srtt / (float)US_PER_S, c->rec.cur.rttvar / (float)US_PER_S,
+             (float)delta_srtt / US_PER_S, (float)c->rec.cur.rttvar / US_PER_S,
              delta_rttvar > 0 ? GRN : delta_rttvar < 0 ? RED : "",
-             delta_rttvar / (float)US_PER_S);
+             (float)delta_rttvar / US_PER_S);
     }
 
     qlog_recovery(rec_mu, "default", c, 0);
@@ -154,7 +155,8 @@ static bool peer_not_awaiting_addr_val(struct q_conn * const c)
     if (!is_clnt(c))
         return true;
 
-    return bit_isset(FRM_MAX, FRM_ACK, &c->pns[pn_init].rx_frames) ||
+    return hshk_done(c) ||
+           bit_isset(FRM_MAX, FRM_ACK, &c->pns[pn_init].rx_frames) ||
            bit_isset(FRM_MAX, FRM_ACK, &c->pns[pn_hshk].rx_frames);
 }
 
@@ -167,7 +169,7 @@ void set_ld_timer(struct q_conn * const c)
 
     // see SetLossDetectionTimer() pseudo code
 
-    const uint64_t now = loop_now();
+    const uint64_t now = w_now();
     const struct pn_space * const pn = earliest_pn(c, true);
     if (pn->loss_t) {
         c->rec.ld_alarm_val = pn->loss_t;
@@ -192,12 +194,14 @@ void set_ld_timer(struct q_conn * const c)
     to *= 1 << c->rec.pto_cnt;
     const uint64_t last_ae_tx_t = earliest_pn(c, false)->last_ae_tx_t;
     c->rec.ld_alarm_val = (last_ae_tx_t ? last_ae_tx_t : now) + to;
+    // XXX do an RTX at least every 8 seconds (spec violation)
+    c->rec.ld_alarm_val = MIN(c->rec.ld_alarm_val, now + 8 * NS_PER_S);
 
 set_to:;
     if (unlikely(c->rec.ld_alarm_val < now)) {
 #ifdef DEBUG_TIMERS
         warn(WRN, "LD alarm expired %.3f sec ago",
-             ((int64_t)c->rec.ld_alarm_val - (int64_t)now) / (double)NS_PER_S);
+             (double)(now - c->rec.ld_alarm_val) / NS_PER_S);
 #endif
         c->rec.ld_alarm_val = 0;
     } else
@@ -205,7 +209,7 @@ set_to:;
 
 #ifdef DEBUG_TIMERS
     warn(DBG, "LD alarm in %.3f sec on %s conn %s",
-         c->rec.ld_alarm_val / (double)NS_PER_S, conn_type(c),
+         (double)c->rec.ld_alarm_val / NS_PER_S, conn_type(c),
          cid_str(c->scid));
 #endif
     timeouts_add(ped(c->w)->wheel, &c->rec.ld_alarm, c->rec.ld_alarm_val);
@@ -219,7 +223,7 @@ void congestion_event(struct q_conn * const c, const uint64_t sent_t)
     if (in_cong_recovery(c, sent_t))
         return;
 
-    c->rec.rec_start_t = loop_now();
+    c->rec.rec_start_t = w_now();
     c->rec.cur.cwnd /= kLossReductionDivisor;
     c->rec.cur.ssthresh = c->rec.cur.cwnd =
         MAX(c->rec.cur.cwnd, kMinimumWindow(c->rec.max_pkt_size));
@@ -250,11 +254,14 @@ in_persistent_cong(struct pn_space * const pn __attribute__((unused)),
 static void remove_from_in_flight(const struct pkt_meta * const m)
 {
     struct q_conn * const c = m->pn->c;
-    ensure(c->rec.cur.in_flight >= m->udp_len, "in_flight underrun %" PRIu,
+    assure(c->rec.cur.in_flight >= m->udp_len, "in_flight underrun %" PRIu,
            m->udp_len - c->rec.cur.in_flight);
     c->rec.cur.in_flight -= m->udp_len;
-    if (m->ack_eliciting)
+    if (m->ack_eliciting) {
         c->rec.ae_in_flight--;
+        if (c->rec.ae_in_flight == 0)
+            m->pn->last_ae_tx_t = 0;
+    }
 }
 
 
@@ -301,7 +308,9 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
 #endif
                 switch (i) {
                 case FRM_CID:
+                    warn(ERR, "max_cid_seq_out %" PRIu, c->max_cid_seq_out);
                     c->max_cid_seq_out = m->min_cid_seq - 1;
+                    warn(ERR, "max_cid_seq_out %" PRIu, c->max_cid_seq_out);
                     break;
                 case FRM_CDB:
                 case FRM_SDB:
@@ -314,8 +323,24 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
                 case FRM_TOK:
                     c->tx_new_tok = true;
                     break;
+                case FRM_SBB:
+                    c->sid_blocked_bidi = true;
+                    break;
+                case FRM_SBU:
+                    c->sid_blocked_uni = true;
+                    break;
+#ifndef NO_MIGRATION
+                case FRM_RTR:
+                    c->tx_retire_cid = true;
+                    break;
+#endif
+                case FRM_MSD:;
+                    struct q_stream * const s =
+                        get_stream(c, m->max_strm_data_sid);
+                    s->tx_max_strm_data = true;
+                    break;
                 default:
-                    warn(CRT, "unhandled RTX of 0x%02x frame", i);
+                    die("unhandled RTX of 0x%02x frame", i);
                 }
             }
 
@@ -369,7 +394,7 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
             NS_PER_US * 9 * MAX(c->rec.cur.latest_rtt, c->rec.cur.srtt) / 8);
 
     // Packets sent before this time are deemed lost.
-    const uint64_t lost_send_t = loop_now() - loss_del;
+    const uint64_t lost_send_t = w_now() - loss_del;
 
 #ifndef NDEBUG
     struct diet lost = diet_initializer(lost);
@@ -418,6 +443,7 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
 #ifndef NDEBUG
     int pos = 0;
     struct ival * i = 0;
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     const uint32_t tmp_len = ped(c->w)->scratch_len;
     uint8_t * const tmp = ped(c->w)->scratch;
     diet_foreach (i, diet, &lost) {
@@ -440,6 +466,7 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
 
     if (pos)
         warn(DBG, "%s %s lost: %s", conn_type(c), pn_type_str(pn->type), tmp);
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 #endif
 
     // OnPacketsLost
@@ -537,7 +564,7 @@ void on_pkt_sent(struct pkt_meta * const m)
 {
     // see OnPacketSent() pseudo code
 
-    const uint64_t now = loop_now();
+    const uint64_t now = w_now();
     pm_by_nr_ins(&m->pn->sent_pkts, m);
     // nr is set in enc_pkt()
     m->t = now;
@@ -589,7 +616,7 @@ update_rtt(struct q_conn * const c, uint_t ack_del)
     c->rec.cur.srtt = (7 * c->rec.cur.srtt / 8) + adj_rtt / 8;
 
 #ifndef NO_QINFO
-    const float latest_rtt = c->rec.cur.latest_rtt / (float)US_PER_S;
+    const float latest_rtt = (float)c->rec.cur.latest_rtt / US_PER_S;
     c->i.min_rtt = MIN(c->i.min_rtt, latest_rtt);
     c->i.max_rtt = MAX(c->i.max_rtt, latest_rtt);
 #endif
@@ -606,7 +633,7 @@ void on_ack_received_1(struct pkt_meta * const lg_ack, const uint_t ack_del)
                        : MAX(pn->lg_acked, lg_ack->hdr.nr);
 
     if (is_ack_eliciting(&pn->tx_frames)) {
-        c->rec.cur.latest_rtt = (uint_t)NS_TO_US(loop_now() - lg_ack->t);
+        c->rec.cur.latest_rtt = (uint_t)NS_TO_US(w_now() - lg_ack->t);
         update_rtt(c, likely(pn->type == pn_data) ? ack_del : 0);
     }
 
@@ -660,10 +687,6 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
 
     // rest of function is not from pseudo code
 
-    if (unlikely(has_frm(m->frms, FRM_HSD)) &&
-        c->pns[pn_hshk].abandoned == false)
-        abandon_pn(&c->pns[pn_hshk]);
-
     if (unlikely(c->pmtud_pkt != UINT16_MAX &&
                  m->hdr.nr == (c->pmtud_pkt & 0x3fff) &&
                  m->hdr.type == (c->pmtud_pkt >> 14)))
@@ -708,14 +731,29 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
 
     m->acked = true;
 
+    if (has_frm(m->frms, FRM_RTR)) {
+        struct cid * const id = cid_by_seq(&c->dcids.ret, m->retire_cid_seq);
+        // if it doesn't exist, it's been deleted already by previous ACK
+        if (id) {
+#ifndef NO_SRT_MATCHING
+            if (id->has_srt)
+                conns_by_srt_del(id->srt);
+#endif
+            cid_del(&c->dcids, id);
+        }
+    }
+
     struct q_stream * const s = m->strm;
     if (s && m->has_rtx == false) {
         // if this ACKs its stream's out_una, move that forward
+        bool fin_acked = false;
         struct w_iov * tmp;
         sq_foreach_from_safe (s->out_una, &s->out, next, tmp) {
             struct pkt_meta * const mou = &meta(s->out_una);
             if (mou->acked == false)
                 break;
+            if (mou->is_fin)
+                fin_acked = true;
             // if this ACKs a crypto packet, we can free it
             if (unlikely(s->id < 0 && mou->lost == false)) {
                 sq_remove(&s->out, s->out_una, w_iov, next);
@@ -725,7 +763,7 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
         }
 
         if (s->id >= 0 && s->out_una == 0) {
-            if (unlikely(m->is_fin || c->did_0rtt)) {
+            if (unlikely(fin_acked || c->did_0rtt)) {
                 // this ACKs a FIN
                 c->have_new_data = true;
                 strm_to_state(s, s->state == strm_hcrm ? strm_clsd : strm_hclo);

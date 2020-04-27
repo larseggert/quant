@@ -27,8 +27,6 @@
 
 #pragma once
 
-#include <stdint.h>
-
 #include <quant/quant.h>
 
 struct q_conn;   // IWYU pragma: no_forward_declare q_conn
@@ -47,8 +45,6 @@ extern void * api_strm;
 
 
 extern void loop_init(void);
-
-extern uint64_t loop_now(void);
 
 extern void loop_break(void);
 
