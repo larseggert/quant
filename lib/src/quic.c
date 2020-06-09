@@ -92,11 +92,18 @@ void alloc_off(struct w_engine * const w,
                const uint32_t len,
                const uint16_t off)
 {
-    w_alloc_len(w, af, q, len,
-                (c && c->rec.max_pkt_size ? c->rec.max_pkt_size
-                                          : default_max_pkt_len(af)) -
-                    AEAD_LEN - off,
-                off);
+    uint16_t pkt_len = default_max_ups(af);
+    if (c && c->rec.max_ups_af) {
+        pkt_len = c->rec.max_ups;
+        if (af != c->rec.max_ups_af) {
+            if (c->rec.max_ups_af == AF_INET)
+                pkt_len -= 20;
+            else
+                pkt_len += 20;
+        }
+    }
+
+    w_alloc_len(w, af, q, len, pkt_len - AEAD_LEN - off, off);
     struct w_iov * v;
     sq_foreach (v, q, next) {
         struct pkt_meta * const m = &meta(v);
@@ -148,10 +155,11 @@ struct w_iov * alloc_iov(struct w_engine * const w,
                          struct pkt_meta ** const m)
 {
     struct w_iov * const v = w_alloc_iov(w, af, len, off);
-    ensure(v, "w_alloc_iov failed");
-    *m = &meta(v);
-    ASAN_UNPOISON_MEMORY_REGION(*m, sizeof(**m));
-    (*m)->strm_data_pos = off;
+    if (likely(v)) {
+        *m = &meta(v);
+        ASAN_UNPOISON_MEMORY_REGION(*m, sizeof(**m));
+        (*m)->strm_data_pos = off;
+    }
     return v;
 }
 
@@ -161,15 +169,16 @@ struct w_iov * dup_iov(const struct w_iov * const v,
                        const uint16_t off)
 {
     struct w_iov * const vdup = w_alloc_iov(v->w, v->wv_af, v->len - off, 0);
-    ensure(vdup, "w_alloc_iov failed");
-    if (mdup) {
-        *mdup = &meta(vdup);
-        ASAN_UNPOISON_MEMORY_REGION(*mdup, sizeof(**mdup));
+    if (likely(vdup)) {
+        if (mdup) {
+            *mdup = &meta(vdup);
+            ASAN_UNPOISON_MEMORY_REGION(*mdup, sizeof(**mdup));
+        }
+        memcpy(vdup->buf, v->buf + off, v->len - off);
+        memcpy(&vdup->saddr, &v->saddr, sizeof(v->saddr));
+        vdup->flags = v->flags;
+        vdup->ttl = v->ttl;
     }
-    memcpy(vdup->buf, v->buf + off, v->len - off);
-    memcpy(&vdup->saddr, &v->saddr, sizeof(v->saddr));
-    vdup->flags = v->flags;
-    vdup->ttl = v->ttl;
     return vdup;
 }
 
@@ -909,8 +918,8 @@ void q_cid(struct q_conn * const c, uint8_t * const buf, size_t * const buf_len)
     ensure(*buf_len >= CID_LEN_MAX, "buf too short (need at least %d)",
            CID_LEN_MAX);
 
-    memcpy(buf, c->oscid.id, c->oscid.len);
-    *buf_len = c->oscid.len;
+    memcpy(buf, c->odcid.id, c->odcid.len);
+    *buf_len = c->odcid.len;
 }
 
 
@@ -919,7 +928,10 @@ q_cid_str(struct q_conn * const c, char * const buf, const size_t buf_len)
 {
     ensure(buf_len >= hex_str_len(CID_LEN_MAX),
            "buf too short (need at least %d)", hex_str_len(CID_LEN_MAX));
-    hex2str(c->oscid.id, c->oscid.len, buf, buf_len);
+    if (c->odcid.len)
+        hex2str(c->odcid.id, c->odcid.len, buf, buf_len);
+    else
+        *buf = 0;
     return buf;
 }
 
@@ -989,35 +1001,21 @@ bool q_ready(struct w_engine * const w,
     struct q_conn * const c = sl_first(&c_ready);
     if (c) {
         bool remove = true;
-#ifndef NDEBUG
-        char * op = "rx";
-#endif
 #ifndef NO_SERVER
-        if (c->needs_accept) {
-#ifndef NDEBUG
-            op = "accept";
-#endif
+        if (c->needs_accept)
             remove = c->have_new_data == false;
-        } else
 #endif
-#ifndef NDEBUG
-            if (c->state == conn_clsd)
-            op = "close";
-        warn(WRN, "%s conn %s ready to %s", conn_type(c), cid_str(c->scid), op);
+#ifdef DEBUG_EXTRA
+        warn(WRN, "%s conn %s ready to %s", conn_type(c), cid_str(c->scid),
+             c->needs_accept ? "accept"
+                             : (c->state == conn_clsd ? "close" : "rx"));
 #endif
         if (remove) {
             sl_remove_head(&c_ready, node_rx_ext);
             c->in_c_ready = false;
         }
-    } else {
+    } else
         warn(WRN, "no conn ready");
-#ifndef NO_MIGRATION
-        struct q_conn * cc;
-        kh_foreach_value(&conns_by_id, cc,
-                         { warn(ERR, "%s", cid_str(cc->scid)); });
-        warn(WRN, "end");
-#endif
-    }
     *ready = c;
 done:
 #ifndef NO_MIGRATION
@@ -1049,18 +1047,27 @@ int q_conn_af(const struct q_conn * const c)
 
 
 #ifndef NO_MIGRATION
-void q_migrate(struct q_conn * const c,
+bool q_migrate(struct q_conn * const c,
                const bool switch_ip,
                const struct sockaddr * const alt_peer)
 {
+    // make sure we have a dcid to migrate to
+    if (switch_ip && next_cid(&c->dcids, c->dcid->seq) == 0) {
+#ifdef DEBUG_EXTRA
+        warn(DBG, "no new dcid available, can't migrate");
+#endif
+        return false;
+    }
+
     ensure(is_clnt(c), "can only rebind w_sock on client");
+    struct w_engine * const w = c->w;
 
     // find the index of the currently used local address
     uint16_t idx;
-    for (idx = 0; idx < c->w->addr_cnt; idx++)
-        if (w_addr_cmp(&c->w->ifaddr[idx].addr, &c->sock->ws_laddr))
+    for (idx = 0; idx < w->addr_cnt; idx++)
+        if (w_addr_cmp(&w->ifaddr[idx].addr, &c->sock->ws_laddr))
             break;
-    ensure(idx < c->w->addr_cnt, "could not find local address index");
+    ensure(idx < w->addr_cnt, "could not find local address index");
 
 #ifndef NDEBUG
     char old_ip[IP_STRLEN];
@@ -1072,43 +1079,42 @@ void q_migrate(struct q_conn * const c,
     if (switch_ip) {
         // try and find an IP address of another AF
         uint16_t other_idx;
-        for (other_idx = 0; other_idx < c->w->addr_cnt; other_idx++)
-            if (c->w->ifaddr[idx].addr.af != c->w->ifaddr[other_idx].addr.af)
+        for (other_idx = 0; other_idx < w->addr_cnt; other_idx++)
+            if (w->ifaddr[idx].addr.af != w->ifaddr[other_idx].addr.af &&
+                (w->ifaddr[other_idx].addr.af == AF_INET6 &&
+                 !w_is_private(&w->ifaddr[other_idx].addr)))
                 break;
 
         // use corresponding preferred_address as peer
-        if (other_idx < c->w->addr_cnt) {
+        if (other_idx < w->addr_cnt) {
             idx = other_idx;
             if (alt_peer) {
                 w_to_waddr(&c->peer.addr, alt_peer);
-            } else if ((c->w->ifaddr[other_idx].addr.af == AF_INET &&
+            } else if ((w->ifaddr[other_idx].addr.af == AF_INET &&
                         memcmp(&c->tp_peer.pref_addr.addr4.addr.ip4,
                                &(char[IP4_LEN]){0}, IP4_LEN) != 0) ||
-                       (c->w->ifaddr[other_idx].addr.af == AF_INET6 &&
+                       (w->ifaddr[other_idx].addr.af == AF_INET6 &&
                         memcmp(&c->tp_peer.pref_addr.addr6.addr.ip4,
                                &(char[IP6_LEN]){0}, IP6_LEN) != 0)) {
-                c->peer = c->w->ifaddr[other_idx].addr.af == AF_INET
+                c->peer = w->ifaddr[other_idx].addr.af == AF_INET
                               ? c->tp_peer.pref_addr.addr4
                               : c->tp_peer.pref_addr.addr6;
             } else
                 goto fail;
         }
-
-        // make sure we have a dcid to migrate to
-        if (next_cid(&c->dcids, c->dcid->seq) == 0)
-            goto fail;
+        c->needs_tx = true;
     }
 
-    struct w_sock * const new_sock = w_bind(c->w, idx, 0, &c->sockopt);
+    struct w_sock * const new_sock = w_bind(w, idx, 0, &c->sockopt);
     if (new_sock == 0) {
     fail:
         // could not open new w_sock, can't rebind
-        warn(ERR, "%s for %s conn %s from %s%s%s:%u failed",
+        warn(ERR, "%s failed for %s conn %s from %s%s%s:%u",
              switch_ip ? "conn migration" : "simulated NAT rebinding",
              conn_type(c), c->scid ? cid_str(c->scid) : "-",
              old_af == AF_INET6 ? "[" : "", old_ip,
              old_af == AF_INET6 ? "]" : "", old_port);
-        return;
+        return false;
     }
 
     // close the current w_sock
@@ -1140,7 +1146,8 @@ void q_migrate(struct q_conn * const c,
          c->sock->ws_laddr.af == AF_INET6 ? "]" : "",
          bswap16(c->sock->ws_lport));
 
-    timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
+    timeouts_add(ped(w)->wheel, &c->tx_w, 0);
+    return true;
 }
 #endif
 

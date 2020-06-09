@@ -78,8 +78,6 @@ static void qlog_common(struct q_conn * const c)
     const uint64_t now = w_now();
     fprintf(c->qlog, "%s[%" PRIu64, likely(c->qlog_last_t) ? "," : "",
             NS_TO_US(now - c->qlog_last_t));
-    // warn(ERR, "%" PRIu64 " -> %" PRIu64 " = %" PRIu64, c->qlog_last_t, now,
-    //      now - c->qlog_last_t);
     c->qlog_last_t = now;
 }
 
@@ -95,7 +93,7 @@ void qlog_init(struct q_conn * const c)
 
     snprintf(c->qlog_file, sizeof(c->qlog_file), "%s/%s.%s.qlog",
              ped(c->w)->conf.qlog_dir,
-             is_clnt(c) ? hex2str(c->odcid.id, c->odcid.len,
+             is_clnt(c) ? hex2str(c->dcid->id, c->dcid->len,
                                   (char[hex_str_len(CID_LEN_MAX)]){""},
                                   hex_str_len(CID_LEN_MAX))
                         : hex2str(c->scid->id, c->scid->len,
@@ -118,7 +116,7 @@ void qlog_init(struct q_conn * const c)
             "fields\":[\"delta_time\",\"category\","
             "\"event\",\"trigger\",\"data\"],\"events\":[",
             quant_name, quant_version, is_clnt(c) ? "client" : "server",
-            hex2str(c->odcid.id, c->odcid.len,
+            hex2str(c->dcid->id, c->dcid->len,
                     (char[hex_str_len(CID_LEN_MAX)]){""},
                     hex_str_len(CID_LEN_MAX)));
 }

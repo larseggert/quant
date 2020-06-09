@@ -36,7 +36,6 @@
 #pragma clang diagnostic ignored "-Wcast-qual"
 #pragma clang diagnostic ignored "-Wundef"
 #pragma clang diagnostic ignored "-Wimplicit-function-declaration"
-#undef WITH_OPENSSL
 #include "quic.h"
 #include "tls.h"
 #pragma clang diagnostic pop

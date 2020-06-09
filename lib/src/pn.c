@@ -109,7 +109,10 @@ void reset_pn(struct pn_space * const pn)
     free_pn(pn);
     memset(&pn->sent_pkts, 0, sizeof(pn->sent_pkts));
     pn->lg_sent = pn->lg_acked = UINT_T_MAX;
-    pn->ect0_cnt = pn->ect1_cnt = pn->ce_cnt = 0;
+#ifndef NO_ECN
+    memset(pn->ecn_ref, 0, sizeof(pn->ecn_ref));
+    memset(pn->ecn_rxed, 0, sizeof(pn->ecn_rxed));
+#endif
     pn->pkts_rxed_since_last_ack_tx = 0;
     pn->abandoned = false;
     bit_zero(FRM_MAX, &pn->rx_frames);

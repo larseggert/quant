@@ -76,13 +76,12 @@ have_keys(struct q_conn * const c, const pn_t t)
 }
 
 
-static void __attribute__((nonnull)) maybe_tx(struct q_conn * const c)
+static void __attribute__((nonnull)) maybe_open_wnd(struct q_conn * const c)
 {
-    if (has_wnd(c, w_max_udp_payload(c->sock)) == false)
-        return;
-
-    c->no_wnd = false;
-    c->needs_tx = true;
+    const bool prev_no_wnd = c->no_wnd;
+    c->no_wnd = has_wnd(c, w_max_udp_payload(c->sock)) == false;
+    if (c->no_wnd == false && prev_no_wnd)
+        c->needs_tx = true;
 }
 
 
@@ -226,7 +225,7 @@ void congestion_event(struct q_conn * const c, const uint64_t sent_t)
     c->rec.rec_start_t = w_now();
     c->rec.cur.cwnd /= kLossReductionDivisor;
     c->rec.cur.ssthresh = c->rec.cur.cwnd =
-        MAX(c->rec.cur.cwnd, kMinimumWindow(c->rec.max_pkt_size));
+        MAX(c->rec.cur.cwnd, kMinimumWindow(c->rec.max_ups));
 }
 
 
@@ -278,10 +277,10 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
     if (unlikely(c->pmtud_pkt != UINT16_MAX &&
                  m->hdr.nr == (c->pmtud_pkt & 0x3fff) &&
                  m->hdr.type == (c->pmtud_pkt >> 14))) {
-        c->rec.max_pkt_size = default_max_pkt_len(c->sock->ws_af);
+        c->rec.max_ups = default_max_ups(c->sock->ws_af);
         warn(NTE, RED "PMTU %u not validated, using %u" NRM,
-             MIN(w_max_udp_payload(c->sock), (uint16_t)c->tp_peer.max_pkt),
-             c->rec.max_pkt_size);
+             MIN(w_max_udp_payload(c->sock), (uint16_t)c->tp_peer.max_ups),
+             c->rec.max_ups);
         c->pmtud_pkt = UINT16_MAX;
     }
 
@@ -308,14 +307,11 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
 #endif
                 switch (i) {
                 case FRM_CID:
-                    warn(ERR, "max_cid_seq_out %" PRIu, c->max_cid_seq_out);
                     c->max_cid_seq_out = m->min_cid_seq - 1;
-                    warn(ERR, "max_cid_seq_out %" PRIu, c->max_cid_seq_out);
                     break;
                 case FRM_CDB:
                 case FRM_SDB:
-                    // DATA_BLOCKED and STREAM_DATA_BLOCKED RTX'ed
-                    // automatically
+                    // DATA_BLOCKED and STREAM_DATA_BLOCKED RTX'ed automatically
                     break;
                 case FRM_HSD:
                     c->tx_hshk_done = true;
@@ -337,7 +333,8 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
                 case FRM_MSD:;
                     struct q_stream * const s =
                         get_stream(c, m->max_strm_data_sid);
-                    s->tx_max_strm_data = true;
+                    if (s)
+                        s->tx_max_strm_data = true;
                     break;
                 default:
                     die("unhandled RTX of 0x%02x frame", i);
@@ -473,11 +470,13 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
     if (do_cc && in_flight_lost) {
         congestion_event(c, lg_lost_tx_t);
         if (in_persistent_cong(pn, lg_lost))
-            c->rec.cur.cwnd = kMinimumWindow(c->rec.max_pkt_size);
+            c->rec.cur.cwnd = kMinimumWindow(c->rec.max_ups);
     }
 
     log_cc(c);
-    maybe_tx(c);
+    maybe_open_wnd(c);
+    if (lg_lost != UINT_T_MAX)
+        timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
 }
 
 
@@ -500,7 +499,7 @@ static void __attribute__((nonnull)) on_ld_timeout(struct q_conn * const c)
              conn_type(c), cid_str(c->scid));
 #endif
         detect_all_lost_pkts(c, true);
-        timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
+        set_ld_timer(c);
         return;
     }
 
@@ -519,7 +518,7 @@ static void __attribute__((nonnull)) on_ld_timeout(struct q_conn * const c)
              conn_type(c), cid_str(c->scid), c->tx_limit);
 #endif
     }
-    timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
+    tx(c);
 
     c->rec.pto_cnt++;
 #ifndef NO_QINFO
@@ -565,6 +564,7 @@ void on_pkt_sent(struct pkt_meta * const m)
     // see OnPacketSent() pseudo code
 
     const uint64_t now = w_now();
+    m->txed = true;
     pm_by_nr_ins(&m->pn->sent_pkts, m);
     // nr is set in enc_pkt()
     m->t = now;
@@ -648,6 +648,7 @@ void on_ack_received_2(struct pn_space * const pn)
     struct q_conn * const c = pn->c;
     detect_lost_pkts(pn, true);
     c->rec.pto_cnt = 0;
+    set_ld_timer(c);
 }
 
 
@@ -667,7 +668,7 @@ on_pkt_acked_cc(const struct pkt_meta * const m)
         c->rec.cur.cwnd += m->udp_len;
     else
         c->rec.cur.cwnd +=
-            (c->rec.max_pkt_size * (uint_t)m->udp_len) / c->rec.cur.cwnd;
+            (c->rec.max_ups * (uint_t)m->udp_len) / c->rec.cur.cwnd;
 
 #ifndef NO_QINFO
     c->i.max_cwnd = MAX(c->i.max_cwnd, c->rec.cur.cwnd);
@@ -701,9 +702,11 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
         // this ACKs a pkt with prior or later RTXs
         if (m->has_rtx) {
             // this ACKs a pkt that was since (again) RTX'ed
+#ifdef DEBUG_EXTRA
             warn(DBG, "%s %s pkt " FMT_PNR_OUT " was RTX'ed as " FMT_PNR_OUT,
                  conn_type(c), pkt_type_str(m->hdr.flags, &m->hdr.vers),
                  m->hdr.nr, m_rtx->hdr.nr);
+#endif
 #ifndef NDEBUG
             ensure(sl_next(m_rtx, rtx_next) == 0, "RTX chain corrupt");
 #endif
@@ -720,12 +723,14 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
                 m = m_rtx;
                 // XXX caller will not be aware that we mucked around with m!
             }
+#ifdef DEBUG_EXTRA
         } else {
             // this ACKs the last ("real") RTX of a packet
-            warn(CRT, "pkt nr=%" PRIu " was earlier TX'ed as %" PRIu,
+            warn(DBG, "pkt nr=%" PRIu " was earlier TX'ed as %" PRIu,
                  has_pkt_nr(m->hdr.flags, m->hdr.vers) ? m->hdr.nr : 0,
                  has_pkt_nr(m_rtx->hdr.flags, m_rtx->hdr.vers) ? m_rtx->hdr.nr
                                                                : 0);
+#endif
         }
     }
 
@@ -781,8 +786,8 @@ void init_rec(struct q_conn * const c)
 {
     timeout_del(&c->rec.ld_alarm);
     c->rec.pto_cnt = 0;
-    c->rec.max_pkt_size = MIN_INI_LEN;
-    c->rec.cur = (struct cc_state){.cwnd = kInitialWindow(c->rec.max_pkt_size),
+    c->rec.max_ups = MIN_INI_LEN;
+    c->rec.cur = (struct cc_state){.cwnd = kInitialWindow(c->rec.max_ups),
                                    .ssthresh = UINT_T_MAX,
                                    .min_rtt = UINT_T_MAX};
 #if !defined(NDEBUG) || !defined(NO_QLOG)

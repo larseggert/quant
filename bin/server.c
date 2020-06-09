@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -360,9 +361,11 @@ int main(int argc, char * argv[])
             const struct q_conn * const c =
 #endif
                 q_bind(w, idx, port[i]);
-            warn(DBG, "%s %s %s %s:%d", basename(argv[0]),
-                 c ? "waiting on" : "failed to bind to", ifname,
-                 w_ntop(&w->ifaddr[idx].addr, ip_tmp), port[i]);
+            warn(DBG, "%s %s %s %s%s%s:%d", basename(argv[0]),
+                 c ? "listening on" : "failed to bind to", ifname,
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "[" : "",
+                 w_ntop(&w->ifaddr[idx].addr, ip_tmp),
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "]" : "", port[i]);
         }
     }
 
@@ -454,6 +457,7 @@ int main(int argc, char * argv[])
                 else
                     send_err(parser.data, 505);
                 ret = 1;
+                continue;
             }
         }
 

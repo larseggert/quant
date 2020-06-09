@@ -97,9 +97,10 @@ struct pn_space {
 
     uint_t pkts_rxed_since_last_ack_tx;
 
-    uint_t ect0_cnt;
-    uint_t ect1_cnt;
-    uint_t ce_cnt;
+#ifndef NO_ECN
+    uint_t ecn_ref[ECN_MASK + 1];
+    uint_t ecn_rxed[ECN_MASK + 1];
+#endif
 
 #if !HAVE_64BIT
     uint8_t _unused[4];

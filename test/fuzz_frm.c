@@ -26,39 +26,17 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/param.h>
+#include <sys/socket.h>
 
 #include <quant/quant.h>
-#include <warpcore/warpcore.h>
 
 #include <conn.h>
 #include <frame.h>
-#include <pkt.h>
 #include <quic.h>
 #include <stream.h>
 #include <tls.h>
 
-
-extern int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size);
-
-static void * w;
-static struct q_conn * c;
-
-
-static int init(void)
-{
-    w = q_init("lo"
-#ifndef __linux__
-               "0"
-#endif
-               ,
-               0);
-    c = new_conn(w, 0xcacacaca, 0, 0, 0, "fuzzer", 0, 0);
-    init_tls(c, 0);
-#ifndef NDEBUG
-    util_dlevel = DBG;
-#endif
-    return 0;
-}
+#include "fuzz.h"
 
 
 int LLVMFuzzerTestOneInput(const uint8_t * data, const size_t size)
@@ -68,7 +46,7 @@ int LLVMFuzzerTestOneInput(const uint8_t * data, const size_t size)
         needs_init = init();
 
     struct w_iov_sq i = w_iov_sq_initializer(i);
-    q_alloc(w, &i, MAX_PKT_LEN);
+    q_alloc(w, &i, c, AF_INET6, 256); // arbitrary value
     struct w_iov * v = sq_first(&i);
     v->len = (uint16_t)MIN(size, v->len);
     memcpy(v->buf, data, v->len);
@@ -83,7 +61,7 @@ int LLVMFuzzerTestOneInput(const uint8_t * data, const size_t size)
         free_iov(orig_v, orig_m);
 
     struct q_stream * s;
-    kh_foreach_value(c->strms_by_id, s, { free_stream(s); });
+    kh_foreach_value(&c->strms_by_id, s, { free_stream(s); });
 
     for (epoch_t e = ep_init; e <= ep_data; e++)
         if (c->cstrms[e])

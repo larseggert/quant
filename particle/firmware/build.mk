@@ -76,7 +76,7 @@ endif
 EXTRA_CFLAGS+=-fstack-usage -foptimize-strlen -ffast-math \
 	-Wno-error -Wno-parentheses -Wno-undef -Wno-unknown-pragmas \
 	-Wno-unused-value -Wno-address -DNDEBUG -DRELEASE_BUILD \
-	-DDLEVEL=DBG -DNO_TLS_LOG -DNO_QLOG \
+	-DDLEVEL=DBG -DNO_TLS_LOG -DNO_QLOG -DNO_ECN \
 	-D'ntoh16(x)=__builtin_bswap16(*(uint16_t*)(x))' \
 	-D'ntoh32(x)=__builtin_bswap32(*(uint32_t*)(x))' \
 	-D'ntoh64(x)=__builtin_bswap64(*(uint64_t*)(x))'

@@ -122,7 +122,7 @@ struct cid * next_cid(struct cids * const ids, const uint_t seq)
 
 bool need_more_cids(const struct cids * const ids, const uint_t act_cid_lim)
 {
-    return ids->act_cnt < MIN(act_cid_lim, CIDS_MAX);
+    return ids->act_cnt < MIN(4, MIN(act_cid_lim, CIDS_MAX));
 }
 
 
@@ -139,6 +139,7 @@ struct cid * cid_ins(struct cids * const ids, const struct cid * const id)
                 conns_by_srt_del(i->srt);
 #endif
             i = sl_first(&ids->avl);
+            assure(i, "have cid");
         } else
             die("got new CID with no room left");
     }

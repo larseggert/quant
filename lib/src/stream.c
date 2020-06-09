@@ -234,7 +234,7 @@ void do_stream_fc(struct q_stream * const s, const uint16_t len)
            actual_lost_cnt, s->lost_cnt);
 #endif
 
-    s->blocked = (s->out_data + len + s->c->rec.max_pkt_size > s->out_data_max);
+    s->blocked = (s->out_data + len + s->c->rec.max_ups > s->out_data_max);
 
     if (s->in_data * 4 > s->in_data_max) {
         s->tx_max_strm_data = true;

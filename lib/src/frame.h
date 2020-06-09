@@ -133,7 +133,8 @@ extern bool __attribute__((nonnull
 extern void __attribute__((nonnull))
 calc_lens_of_stream_or_crypto_frame(struct pkt_meta * const m,
                                     const struct w_iov * const v,
-                                    const struct q_stream * const s);
+                                    const struct q_stream * const s,
+                                    const bool rtx);
 
 extern void __attribute__((nonnull))
 enc_stream_or_crypto_frame(uint8_t ** pos,

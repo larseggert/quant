@@ -50,7 +50,7 @@ struct q_conn_conf {
     uint8_t enable_udp_zero_checksums : 1;
     uint8_t enable_tls_key_updates : 1; // TODO default to on eventually
     uint8_t disable_active_migration : 1;
-    uint8_t enable_quantum_readiness_test : 1; // FIXME: is temporary
+    uint8_t enable_quantum_readiness_test : 1; // TODO: is temporary
     uint8_t : 3;
     uint32_t version;
 };
@@ -65,8 +65,9 @@ struct q_conf {
     const char * const qlog_dir;
     uint32_t num_bufs;
     uint8_t enable_tls_cert_verify : 1;
-    uint8_t force_retry : 1; // ignored on client
-    uint8_t : 6;
+    uint8_t force_retry : 1;    // ignored on client
+    uint8_t force_chacha20 : 1; // TODO: is temporary
+    uint8_t : 5;
     uint8_t client_cid_len;
     uint8_t server_cid_len;
 };
@@ -202,7 +203,7 @@ extern bool __attribute__((nonnull))
 q_is_uni_stream(const struct q_stream * const s);
 
 #ifndef NO_MIGRATION
-extern void __attribute__((nonnull(1)))
+extern bool __attribute__((nonnull(1)))
 q_migrate(struct q_conn * const c,
           const bool switch_ip,
           const struct sockaddr * const alt_peer);

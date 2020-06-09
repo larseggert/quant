@@ -168,6 +168,48 @@ externalproject_add(quinn
 )
 
 
+# Use msquic for testing against
+externalproject_add(lttng-ust
+  UPDATE_COMMAND ""
+  GIT_REPOSITORY git://git.lttng.org/lttng-ust.git
+  GIT_SHALLOW 1
+  PATCH_COMMAND ./bootstrap
+  CONFIGURE_COMMAND ./configure CC=gcc-9 CXX=g++-9
+  BUILD_COMMAND make
+  INSTALL_COMMAND ""
+  BUILD_IN_SOURCE 1
+  EXCLUDE_FROM_ALL 1
+)
+
+externalproject_add(msquic
+  # DEPENDS lttng-ust
+  UPDATE_COMMAND ""
+  GIT_REPOSITORY git@github.com:microsoft/msquic.git
+  GIT_SHALLOW 1
+  # GIT_TAG add_quicker_support-tls-d28
+  CONFIGURE_COMMAND
+    cmake -DCMAKE_C_COMPILER=gcc-9
+      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -DQUIC_ENABLE_LOGGING=OFF
+      .
+  BUILD_COMMAND make VERBOSE=1
+  INSTALL_COMMAND ""
+  BUILD_IN_SOURCE 1
+  EXCLUDE_FROM_ALL 1
+)
+
+
+# Use quic-scanner for testing against
+externalproject_add(quic-scanner
+  UPDATE_COMMAND ""
+  GIT_REPOSITORY https://github.com/Lekensteyn/quic-scanner.git
+  GIT_SHALLOW 1
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND ""
+  INSTALL_COMMAND ""
+  EXCLUDE_FROM_ALL 1
+)
+
 set(TRACKER github.com/QUIC-Tracker/quic-tracker)
 externalproject_add(quic-tracker
   DOWNLOAD_COMMAND
@@ -176,7 +218,7 @@ externalproject_add(quic-tracker
       CGO_LDFLAGS=-L${OPENSSL_ROOT_DIR}/lib go get ${TRACKER} || true
   UPDATE_COMMAND ""
   CONFIGURE_COMMAND
-    sed -i "" -e "s|go build|GOPATH=${GOPATH} CGO_CFLAGS=-I${OPENSSL_ROOT_DIR}/include CGO_LDFLAGS=-L${OPENSSL_ROOT_DIR}/lib go build|g" ${GOPATH}/src/${TRACKER}/../../mpiraux/pigotls/Makefile
+    sed -i "" -e "s|go build|GOPATH=${GOPATH} CGO_CFLAGS=-I${OPENSSL_ROOT_DIR}/include CGO_LDFLAGS=-L${OPENSSL_ROOT_DIR}/lib go build|g $<SEMICOLON> s|make check|make|g" ${GOPATH}/src/${TRACKER}/../../mpiraux/pigotls/Makefile
   BUILD_COMMAND
     cd ${GOPATH}/src/${TRACKER}/../../mpiraux/pigotls &&
     env GOPATH=${GOPATH} OPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR} make &&

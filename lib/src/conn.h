@@ -31,7 +31,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#ifndef NO_MIGRATION
+#ifndef NO_QLOG
 #include <sys/param.h>
 #endif
 
@@ -48,6 +48,8 @@
 #include "quic.h"
 #include "recovery.h"
 #include "tls.h"
+
+struct q_stream; // IWYU pragma: no_forward_declare q_stream
 
 
 KHASH_MAP_INIT_INT64(strms_by_id, struct q_stream *)
@@ -112,7 +114,7 @@ struct transport_params {
     uint_t max_strms_bidi;
     uint_t max_idle_to;
     uint_t max_ack_del;
-    uint_t max_pkt;
+    uint_t max_ups;
     uint_t act_cid_lim;
     uint_t ack_del_exp;
     bool disable_active_migration;
@@ -141,7 +143,7 @@ typedef enum { CONN_STATES } conn_state_t;
 
 extern const char * const conn_state_str[];
 
-#define MAX_ERR_REASON_LEN 32 // keep < 256, since err_reason_len is uint8_t
+#define MAX_ERR_REASON_LEN 64 // keep < 256, since err_reason_len is uint8_t
 
 #define DEF_ACK_DEL_EXP 3
 #define DEF_MAX_ACK_DEL 25 // ms
@@ -156,9 +158,9 @@ struct q_conn {
     sl_entry(q_conn) node_aq;   ///< For maintaining the accept queue.
     sl_entry(q_conn) node_embr; ///< For bound but unconnected connections.
 #endif
-    struct cids dcids; ///< Destination CID hash by sequence.
+    struct cids dcids; ///< Destination CIDs.
 #ifndef NO_MIGRATION
-    struct cids scids;           ///< Source CID hash by sequence.
+    struct cids scids;           ///< Source CIDs.
     struct w_sockaddr migr_peer; ///< Peer's desired migration address.
     struct w_sock * migr_sock;
     struct w_iov_sq migr_txq;
@@ -197,10 +199,8 @@ struct q_conn {
     uint32_t have_new_data : 1; ///< New stream data was enqueued.
     uint32_t in_c_ready : 1;    ///< Connection is listed in c_ready.
 #ifndef NO_SERVER
-    uint32_t tx_rtry : 1;      ///< We need to send a RETRY.
     uint32_t needs_accept : 1; ///< Need to call q_accept() for connection.
 #else
-    uint32_t _unused_tx_rtry : 1;
     uint32_t _unused_needs_accept : 1;
 #endif
     uint32_t key_flips_enabled : 1; ///< Are TLS key updates enabled?
@@ -212,7 +212,7 @@ struct q_conn {
     uint32_t tx_hshk_done : 1;      ///< Send HANDSHAKE_DONE.
     uint32_t in_c_zcid : 1;
     uint32_t tx_new_tok : 1; ///< Send NEW_TOKEN.
-    uint32_t : 2;
+    uint32_t : 3;
 
     conn_state_t state; ///< State of the connection.
 
@@ -279,8 +279,7 @@ struct q_conn {
     uint8_t _unused[4];
 #endif
 
-    struct cid odcid; ///< Original destination CID of first Initial.
-    struct cid oscid; ///< Original source CID of first Initial.
+    struct cid odcid; ///< Client-chosen destination CID of first Initial.
 
     struct w_iov_sq txq;
 
@@ -319,7 +318,8 @@ extern struct q_conn_sl c_embr;
 #endif
 
 
-#define hshk_done(c) (c)->pns[pn_hshk].abandoned
+#define hshk_done(c)                                                           \
+    ((c)->pns[pn_hshk].abandoned && out_fully_acked((c)->cstrms[ep_data]))
 
 
 extern struct q_conn_sl c_ready;
@@ -404,7 +404,7 @@ restart_idle_alarm(struct q_conn * const c);
 #ifdef FUZZING
 extern void __attribute__((nonnull)) rx_pkts(struct w_iov_sq * const x,
                                              struct q_conn_sl * const crx,
-                                             const struct w_sock * const ws);
+                                             struct w_sock * const ws);
 #endif
 
 static inline struct pn_space * __attribute__((nonnull, no_instrument_function))

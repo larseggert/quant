@@ -43,7 +43,7 @@ export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=../misc/gcc
 # commands to run the different clients against $addr:$port
 case $c in
         quant)
-                cc="bin/client -v5 -i $iface -u -t2 -q . \
+                cc="bin/client -v5 -i $iface -u -t2 -q . -l /tmp/clnt.tlslog \
                         \"https://$addr:$port$path\""
                 ;;
         wquant)
@@ -76,12 +76,16 @@ case $c in
                         CGO_CFLAGS=-I/usr/local/opt/openssl@1.1/include \
                         CGO_LDFLAGS=-L/usr/local/opt/openssl@1.1/lib \
                     go run $(pwd)/external/go/src/github.com/QUIC-Tracker/quic-tracker/bin/test_suite/scenario_runner.go \
-                        -interface lo0 -host $addr:$port -scenario http_get_on_uni_stream"
+                        -interface lo0 -host $addr:$port -path $path -scenario http_get_on_uni_stream"
                 ;;
         quic-go)
                 cc="env GOPATH=$(pwd)/external/go go run \
                         external/go/src/github.com/lucas-clemente/quic-go/h09/client/main.go \
                         $addr:$port"
+                ;;
+        quic-scanner)
+                cc="external/quic-scanner-prefix/src/quic-scanner/probe_quic_versions.py \
+                    -s $addr:$port"
                 ;;
         quinn)
                 cc="cd external/quinn-prefix/src/quinn; \
@@ -93,7 +97,7 @@ esac
 case $s in
         quant)
                 sc="bin/server -v5 -c $cert -k $key -i $iface -t2 -q . \
-                    -p 4433 -p 4434 -p $port -d $dir"
+                    -l /tmp/serv.tlslog -p 4433 -p 4434 -p $port -d $dir"
                 ;;
         wquant)
                 sc="vagrant ssh -c \"\

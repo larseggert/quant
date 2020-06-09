@@ -32,21 +32,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
+#include <sys/socket.h>
 
 #ifndef NO_ERR_REASONS
 #include <stdarg.h>
 #endif
 
-#ifndef NO_MIGRATION
-#include <sys/socket.h>
-#endif
-
 #ifdef __FreeBSD__
 #include <netinet/in.h>
-#endif
-
-#if !defined(PARTICLE) && !defined(RIOT_VERSION)
-#include <netinet/ip.h>
 #endif
 
 #include <picotls.h>
@@ -158,6 +151,9 @@ SPLAY_GENERATE(ooo_0rtt_by_cid, ooo_0rtt, node, ooo_0rtt_by_cid_cmp)
 static inline epoch_t __attribute__((nonnull))
 epoch_in(const struct q_conn * const c)
 {
+    if (unlikely(c->tls.t == 0))
+        return ep_init;
+
     const size_t epoch = ptls_get_read_epoch(c->tls.t);
     ensure(epoch <= ep_data, "unhandled epoch %lu", (unsigned long)epoch);
     return (epoch_t)epoch;
@@ -284,6 +280,11 @@ rtx_pkt(struct w_iov * const v, struct pkt_meta * const m)
     struct pkt_meta * m_orig;
     struct w_iov * const v_orig =
         alloc_iov(c->w, q_conn_af(c), 0, data_start, &m_orig);
+    if (unlikely(v_orig == 0)) {
+        warn(WRN, "could not alloc iov");
+        return;
+    }
+
     pm_cpy(m_orig, m, true);
     memcpy(v_orig->buf - data_start, v->buf - data_start, data_start);
     m_orig->has_rtx = true;
@@ -295,15 +296,17 @@ rtx_pkt(struct w_iov * const v, struct pkt_meta * const m)
 }
 
 
+#ifndef FUZZING
 static void do_w_tx(struct w_sock * const ws, struct w_iov_sq * const q)
 {
-#ifndef FUZZING
     w_tx(ws, q);
     do
         w_nic_tx(ws->w);
     while (w_tx_pending(q));
-#endif
 }
+#else
+#define do_w_tx(...)
+#endif
 
 
 static void __attribute__((nonnull)) tx_vneg_resp(struct w_sock * const ws,
@@ -318,6 +321,10 @@ static void __attribute__((nonnull)) tx_vneg_resp(struct w_sock * const ws,
 
     struct pkt_meta * mx;
     struct w_iov * const xv = alloc_iov(ws->w, ws->ws_af, 0, 0, &mx);
+    if (unlikely(xv == 0)) {
+        warn(WRN, "could not alloc iov");
+        return;
+    }
 
     struct w_iov_sq q = w_iov_sq_initializer(q);
     sq_insert_head(&q, xv, next);
@@ -329,7 +336,7 @@ static void __attribute__((nonnull)) tx_vneg_resp(struct w_sock * const ws,
     uint8_t * pos = xv->buf;
     const uint8_t * end = xv->buf + xv->len;
     enc1(&pos, end, mx->hdr.flags);
-    enc4(&pos, end, mx->hdr.vers);
+    enc4(&pos, end, 0);
     enc_lh_cids(&pos, end, mx, &m->hdr.scid, &m->hdr.dcid);
 
     for (uint8_t j = 0; j < ok_vers_len; j++)
@@ -346,6 +353,72 @@ static void __attribute__((nonnull)) tx_vneg_resp(struct w_sock * const ws,
 }
 
 
+#ifndef NO_SERVER
+static void __attribute__((nonnull)) update_act_scid(struct q_conn * const c)
+{
+#ifndef NO_MIGRATION
+    conns_by_id_del(c->scid);
+#endif
+    // server picks a new random cid
+    mk_cid_str(INF, c->scid, scid_str_prev);
+    mk_rand_cid(c->scid, ped(c->w)->conf.server_cid_len, true);
+    mk_cid_str(INF, c->scid, scid_str_new);
+    warn(INF, "hshk switch to scid %s for %s %s conn (was %s)", scid_str_new,
+         conn_state_str[c->state], conn_type(c), scid_str_prev);
+#ifndef NO_MIGRATION
+    conns_by_id_ins(c, c->scid);
+#endif
+}
+
+
+static void __attribute__((nonnull)) tx_rtry(struct q_conn * const c)
+{
+#ifdef DEBUG_EXTRA
+    warn(INF, "sending retry");
+#endif
+
+    struct pkt_meta * mx;
+    struct w_iov * const xv = alloc_iov(c->w, q_conn_af(c), 0, 0, &mx);
+    if (unlikely(xv == 0)) {
+        warn(WRN, "could not alloc iov");
+        return;
+    }
+
+    struct w_iov_sq q = w_iov_sq_initializer(q);
+    sq_insert_head(&q, xv, next);
+
+    mx->hdr.type = LH_RTRY;
+    mx->hdr.flags = LH | mx->hdr.type | (uint8_t)w_rand_uniform32(0x0f);
+    mx->hdr.vers = c->vers;
+
+    const struct cid odcid = *c->scid;
+    update_act_scid(c);
+    mk_rtry_tok(c, &odcid);
+    uint8_t rit[RIT_LEN];
+    mk_rit(c, &odcid, mx->hdr.flags, c->dcid, c->scid, c->tok, c->tok_len, rit);
+
+    uint8_t * pos = xv->buf;
+    const uint8_t * end = xv->buf + xv->len;
+    enc1(&pos, end, mx->hdr.flags);
+    enc4(&pos, end, mx->hdr.vers);
+    enc_lh_cids(&pos, end, mx, c->dcid, c->scid);
+    encb(&pos, end, c->tok, c->tok_len);
+    encb(&pos, end, rit, RIT_LEN);
+
+    mx->txed = 1;
+    mx->udp_len = xv->len = (uint16_t)(pos - xv->buf);
+    xv->saddr = c->peer;
+#ifndef NO_ECN
+    xv->flags = likely(c->sockopt.enable_ecn) ? ECN_ECT0 : ECN_NOT;
+#endif
+    log_pkt("TX", xv, &xv->saddr, c->tok, c->tok_len, rit);
+    // qlog_transport(pkt_tx, "default", xv, mx);
+    do_w_tx(c->sock, &q);
+    q_free(&q);
+}
+#endif
+
+
 static void __attribute__((nonnull)) do_tx_txq(struct q_conn * const c,
                                                struct w_iov_sq * const q,
                                                struct w_sock * const ws)
@@ -355,13 +428,13 @@ static void __attribute__((nonnull)) do_tx_txq(struct q_conn * const c,
 #endif
 
     const uint16_t pmtu =
-        MIN(w_max_udp_payload(ws), (uint16_t)c->tp_peer.max_pkt);
+        MIN(w_max_udp_payload(ws), (uint16_t)c->tp_peer.max_ups);
 
     if (w_iov_sq_cnt(q) > 1 && unlikely(is_lh(*sq_first(q)->buf))) {
         const bool do_pmtud =
-            c->rec.max_pkt_size == MIN_INI_LEN && pmtu > MIN_INI_LEN;
-        c->pmtud_pkt = coalesce(
-            q, unlikely(do_pmtud) ? pmtu : c->rec.max_pkt_size, do_pmtud);
+            c->rec.max_ups == MIN_INI_LEN && pmtu > MIN_INI_LEN;
+        c->pmtud_pkt =
+            coalesce(q, unlikely(do_pmtud) ? pmtu : c->rec.max_ups, do_pmtud);
     }
     do_w_tx(ws, q);
 
@@ -400,8 +473,7 @@ void do_conn_fc(struct q_conn * const c, const uint16_t len)
     if (unlikely(c->state == conn_clsg || c->state == conn_drng))
         return;
 
-    if (len &&
-        c->out_data_str + len + c->rec.max_pkt_size > c->tp_peer.max_data)
+    if (len && c->out_data_str + len + c->rec.max_ups > c->tp_peer.max_data)
         c->blocked = true;
 
     // check if we need to do connection-level flow control
@@ -422,7 +494,7 @@ static void __attribute__((nonnull)) do_conn_mgmt(struct q_conn * const c)
         if (!is_clnt(c) && unlikely(c->tx_new_tok && c->tok_len == 0 &&
                                     c->pns[ep_init].abandoned))
             // TODO: find a better way to send NEW_TOKEN
-            make_rtry_tok(c);
+            mk_rtry_tok(c, c->scid);
 
         do_stream_id_fc(c, c->cnt_uni, false, true);
         do_stream_id_fc(c, c->cnt_bidi, true, true);
@@ -546,6 +618,10 @@ tx_ack(struct q_conn * const c, const epoch_t e, const bool tx_ack_eliciting)
 
     struct pkt_meta * m;
     struct w_iov * const v = alloc_iov(c->w, q_conn_af(c), 0, 0, &m);
+    if (unlikely(v == 0)) {
+        warn(WRN, "could not alloc iov");
+        return false;
+    }
     return enc_pkt(c->cstrms[e], false, false, tx_ack_eliciting, false, v, m);
 }
 
@@ -566,13 +642,6 @@ void tx(struct q_conn * const c)
         goto done;
     }
 
-#ifndef NO_SERVER
-    if (unlikely(c->tx_rtry)) {
-        tx_ack(c, ep_init, false);
-        goto done;
-    }
-#endif
-
     if (unlikely(c->state == conn_opng) && is_clnt(c) && c->try_0rtt &&
         c->pns[pn_data].data.out_0rtt.aead == 0) {
         // if we have no 0-rtt keys here, the ticket didn't have any - disable
@@ -587,12 +656,13 @@ void tx(struct q_conn * const c)
     do_conn_mgmt(c);
 
     if (likely(c->state != conn_clsg)) {
-        for (epoch_t e = ep_init; e <= ep_data; e++) {
-            if (c->cstrms[e] == 0)
-                continue;
-            if (tx_stream(c->cstrms[e]) == false)
-                goto done;
-        }
+        if (unlikely(hshk_done(c) == false))
+            for (epoch_t e = ep_init; e <= ep_data; e++) {
+                if (c->cstrms[e] == 0)
+                    continue;
+                if (tx_stream(c->cstrms[e]) == false)
+                    goto done;
+            }
 
         struct q_stream * s;
         kh_foreach_value(&c->strms_by_id, s, {
@@ -634,14 +704,6 @@ void conns_by_srt_ins(struct q_conn * const c, uint8_t * const srt)
     int ret;
     const khiter_t k = kh_put(conns_by_srt, &conns_by_srt, srt, &ret);
     ensure(ret >= 1, "inserted returned %d", ret);
-    // if (unlikely(ret == 0)) {
-    //     if (kh_val(&conns_by_srt, k) != c)
-    //         die("srt already in use by different conn ");
-    //     else {
-    //         warn(WRN, "srt %s already used for conn", srt_str(srt));
-    //         return;
-    //     }
-    // }
     kh_val(&conns_by_srt, k) = c;
 }
 
@@ -650,9 +712,6 @@ extern void conns_by_srt_del(uint8_t * const srt)
 {
     const khiter_t k = kh_get(conns_by_srt, &conns_by_srt, srt);
     ensure(k != kh_end(&conns_by_srt), "found");
-    // if (likely(k != kh_end(&conns_by_srt)))
-    //     // if peer is reusing SRTs w/different CIDs, it may already be
-    //     deleted
     kh_del(conns_by_srt, &conns_by_srt, k);
 }
 #endif
@@ -677,25 +736,6 @@ void conns_by_id_del(struct cid * const id)
     ensure(k != kh_end(&conns_by_id), "found");
     kh_del(conns_by_id, &conns_by_id, k);
     id->in_cbi = false;
-}
-#endif
-
-
-#ifndef NO_SERVER
-static void __attribute__((nonnull)) update_act_scid(struct q_conn * const c)
-{
-#ifndef NO_MIGRATION
-    conns_by_id_del(c->scid);
-#endif
-    // server picks a new random cid
-    mk_cid_str(INF, c->scid, scid_str_prev);
-    mk_rand_cid(c->scid, ped(c->w)->conf.server_cid_len, true);
-    mk_cid_str(INF, c->scid, scid_str_new);
-    warn(INF, "hshk switch to scid %s for %s %s conn (was %s)", scid_str_new,
-         conn_state_str[c->state], conn_type(c), scid_str_prev);
-#ifndef NO_MIGRATION
-    conns_by_id_ins(c, c->scid);
-#endif
 }
 #endif
 
@@ -734,7 +774,7 @@ rx_crypto(struct q_conn * const c, const struct pkt_meta * const m_cur)
 #endif
         }
     }
-    if (!is_clnt(c) && c->tx_hshk_done && c->pns[pn_hshk].abandoned == false)
+    if (!is_clnt(c) && c->tx_hshk_done && hshk_done(c) == false)
         abandon_pn(&c->pns[pn_hshk]);
 }
 
@@ -754,23 +794,22 @@ new_initial_cids(struct q_conn * const c,
         c->odcid.seq = 0;
         mk_rand_cid(&c->odcid, CID_LEN_MAX + 1, false); // random len
         c->dcid = cid_ins(&c->dcids, &c->odcid);
-    } else if (dcid) {
+    } else if (dcid)
         // dcid->seq is 0 due to calloc allocation
         c->dcid = cid_ins(&c->dcids, dcid);
-        // don't cid_cpy(&c->odcid, dcid); serv odcid signals prior retry
-    }
 
     // init scid and add connection to global data structures
-    c->oscid.seq = 0;
+    struct cid id = {.seq = 0};
     if (is_clnt(c))
-        mk_rand_cid(&c->oscid, ped(c->w)->conf.client_cid_len, false);
+        mk_rand_cid(&id, ped(c->w)->conf.client_cid_len, false);
     else if (scid) {
-        cid_cpy(&c->oscid, scid);
-        mk_rand_cid(&c->oscid, 0, true);
+        cid_cpy(&id, scid);
+        cid_cpy(&c->odcid, scid);
+        mk_rand_cid(&id, 0, true);
     }
 #ifndef NO_MIGRATION
-    if (c->oscid.len) {
-        c->scid = cid_ins(&c->scids, &c->oscid);
+    if (id.len) {
+        c->scid = cid_ins(&c->scids, &id);
         conns_by_id_ins(c, c->scid);
     } else
 #endif
@@ -805,6 +844,7 @@ vneg_or_rtry_resp(struct q_conn * const c, const bool is_vneg)
             conns_by_id_del(c->scid);
 #endif
         new_initial_cids(c, 0, 0);
+        init_tp(c);
     }
 
     // reset CC state
@@ -874,6 +914,11 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
     switch (c->state) {
     case conn_idle:
 #ifndef NO_SERVER
+        if (unlikely(m->hdr.vers == 0)) {
+            warn(ERR, "server RX'ed vneg");
+            goto done;
+        }
+
         // this is a new connection
         c->vers = m->hdr.vers;
 
@@ -882,22 +927,14 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
             if (m->hdr.type == LH_INIT && tok_len) {
                 if (verify_rtry_tok(c, tok, tok_len) == false) {
                     warn(ERR, "retry token verification failed");
+                    err_close(c, ERR_INVL_TOK, 0, "invalid token %s",
+                              tok_str(tok, tok_len));
                     enter_closing(c);
                     goto done;
                 }
             } else {
-                if (c->tx_rtry) {
-                    warn(DBG, "already tx'ing retry, ignoring");
-                    goto done;
-                }
-#ifdef DEBUG_EXTRA
-                warn(INF, "sending retry");
-#endif
                 // send a RETRY
-                make_rtry_tok(c);
-                ok = true;
-                c->needs_tx = c->tx_rtry = true;
-                update_act_scid(c);
+                tx_rtry(c);
                 goto done;
             }
         }
@@ -915,8 +952,6 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
             goto done;
         }
 
-        init_tp(c);
-
 #ifndef NO_OOO_0RTT
         // check if any reordered 0-RTT packets are cached for this CID
         const struct ooo_0rtt which = {.cid = m->hdr.dcid};
@@ -932,14 +967,14 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
         }
 #endif
 
-        conn_to_state(c, conn_opng);
-
         // server picks a new random cid
         update_act_scid(c);
 #ifndef NO_MIGRATION
-        // keep paying attention to oscid in case of reordered/dup'ed Initials
-        conns_by_id_ins(c, &c->oscid);
+        // keep listening on odcid for multi-pkt/reordered/dup'ed Initials
+        conns_by_id_ins(c, &c->odcid);
 #endif
+        init_tp(c);
+        conn_to_state(c, conn_opng);
         ok = true;
 #endif
         break;
@@ -990,14 +1025,12 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
                          ", retrying with 0x%0" PRIx32 "",
                          c->vers_initial, c->vers);
                     ok = true;
-                } else {
+                } else
                     // the application requested a given version for this conn
                     warn(INF,
                          "serv didn't like app-requested vers 0x%0" PRIx32
                          ", aborting",
                          c->vers);
-                    ok = false;
-                }
                 goto done;
             }
 
@@ -1084,25 +1117,18 @@ done:
     if (unlikely(ok == false))
         return false;
 
+#ifndef NO_ECN
     if (likely(m->hdr.nr != UINT_T_MAX)) {
         struct pn_space * const pn = pn_for_pkt_type(c, m->hdr.type);
         // update ECN info
-        switch (v->flags & IPTOS_ECN_MASK) {
-        case IPTOS_ECN_ECT1:
-            pn->ect1_cnt++;
-            break;
-        case IPTOS_ECN_ECT0:
-            pn->ect0_cnt++;
-            break;
-        case IPTOS_ECN_CE:
-            pn->ce_cnt++;
-            break;
-        }
+        pn->ecn_rxed[v->flags & ECN_MASK]++;
         pn->pkts_rxed_since_last_ack_tx++;
 
+        // TODO: if we do this, it needs to move outside of #ifndef NO_ECN
         // if (pn == &c->pns[pn_data] && pn->pkts_rxed_since_last_ack_tx >= 16)
         //     tx_ack(c, ep_data, false);
     }
+#endif
 
 #ifndef NO_QLOG
     // if pkt has STREAM or CRYPTO frame but no strm pointer, it's a dup
@@ -1139,6 +1165,11 @@ static void __attribute__((nonnull))
         // allocate new w_iov for the (eventual) unencrypted data and meta-data
         struct pkt_meta * m;
         struct w_iov * const v = alloc_iov(ws->w, ws->ws_af, 0, 0, &m);
+        if (unlikely(v == 0)) {
+            warn(WRN, "could not alloc iov");
+            return;
+        }
+
         v->saddr = xv->saddr;
         v->flags = xv->flags;
         v->ttl = xv->ttl;
@@ -1161,6 +1192,7 @@ static void __attribute__((nonnull))
             if (w_connected(ws) == false) {
                 if (m->hdr.type == LH_INIT &&
                     (m->hdr.scid.len == 0 || m->hdr.scid.len > CID_LEN_MAX)) {
+                    // FIXME: prevent this on client
                     warn(ERR, "received invalid %u-byte %s pkt, sending vneg",
                          v->len, pkt_type_str(m->hdr.flags, &m->hdr.vers));
                     tx_vneg_resp(ws, v, m);
@@ -1242,8 +1274,8 @@ static void __attribute__((nonnull))
             if (m->hdr.scid.len && cid_cmp(&m->hdr.scid, c->dcid) != 0 &&
                 m->hdr.vers && m->hdr.type == LH_RTRY) {
                 uint8_t computed_rit[RIT_LEN];
-                make_rit(c, m->hdr.flags, &m->hdr.dcid, &m->hdr.scid, tok,
-                         tok_len, computed_rit);
+                mk_rit(c, c->dcid, m->hdr.flags, &m->hdr.dcid, &m->hdr.scid,
+                       tok, tok_len, computed_rit);
                 if (memcmp(rit, computed_rit, RIT_LEN) != 0) {
                     log_pkt("RX", v, &v->saddr, tok, tok_len, rit);
                     warn(ERR, "rit mismatch, computed %s",
@@ -1320,8 +1352,8 @@ static void __attribute__((nonnull))
 #endif
 
                 if (unlikely(scid == 0)) {
-                    if (cid_cmp(&m->hdr.dcid, &c->oscid) == 0)
-                        scid = &c->oscid;
+                    if (cid_cmp(&m->hdr.dcid, &c->odcid) == 0)
+                        scid = &c->odcid;
                     else {
                         log_pkt("RX", v, &v->saddr, tok, tok_len, rit);
                         warn(ERR, "unknown scid %s, ignoring pkt",
@@ -1448,7 +1480,7 @@ static void __attribute__((nonnull))
     drop:
 #ifndef NO_SERVER
         if (likely(c) && !is_clnt(c) &&
-            unlikely(c->state == conn_idle && c->tx_rtry == false)) {
+            unlikely(c->state == conn_idle && c->scid)) {
             // drop server connection on invalid clnt Initial
             warn(DBG, "dropping idle %s conn %s", conn_type(c),
                  cid_str(c->scid));
@@ -1538,14 +1570,13 @@ void rx(struct w_sock * const ws)
             tx(c); // clears c->needs_tx if we TX'ed
 
         for (epoch_t e = c->min_rx_epoch; e <= ep_data; e++) {
-            if (c->cstrms[e] == 0 || e == ep_0rtt)
+            if (unlikely(c->cstrms[e] == 0 || e == ep_0rtt))
                 // don't ACK abandoned and 0rtt pn spaces
                 continue;
-            struct pn_space * const pn = pn_for_epoch(c, e);
-            switch (needs_ack(pn)) {
+            switch (needs_ack(pn_for_epoch(c, e))) {
             case imm_ack:
-                c->needs_tx = true;
-                timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
+                if (likely(tx_ack(c, e, false)))
+                    do_tx(c);
                 break;
             case del_ack:
                 if (likely(c->state != conn_clsg))
@@ -1557,13 +1588,7 @@ void rx(struct w_sock * const ws)
             }
         }
 
-#ifndef NO_SERVER
-        if (unlikely(c->tx_rtry))
-            // if we sent a retry, forget the entire connection existed
-            free_conn(c);
-        else
-#endif
-            if (c->have_new_data && !c->in_c_ready) {
+        if (c->have_new_data && !c->in_c_ready) {
             sl_insert_head(&c_ready, c, node_rx_ext);
             c->in_c_ready = true;
             maybe_api_return(q_ready, 0, 0);
@@ -1607,8 +1632,7 @@ void
     va_end(ap);
 
     warn(ERR, "%s", c->err_reason);
-    c->err_reason_len =
-        (uint8_t)MIN((unsigned long)ret + 1, sizeof(c->err_reason));
+    c->err_reason_len = (uint8_t)MIN((unsigned long)ret, sizeof(c->err_reason));
 #endif
     conn_to_state(c, conn_qlse);
     c->err_code = code;
@@ -1677,12 +1701,10 @@ void enter_closing(struct q_conn * const c)
 #endif
         // no need to go closing->draining in these cases
         enter_closed(c);
+#ifndef FUZZING
         return;
-#ifndef FUZZING
     }
-#endif
 
-#ifndef FUZZING
     // start closing/draining alarm (3 * RTO)
     const timeout_t dur =
         3 * (c->rec.cur.srtt == 0 ? kInitialRtt : c->rec.cur.srtt * NS_PER_US) +
@@ -1692,13 +1714,14 @@ void enter_closing(struct q_conn * const c)
     warn(DBG, "closing/draining alarm in %.3f sec on %s conn %s",
          (double)dur / NS_PER_S, conn_type(c), cid_str(c->scid));
 #endif
-#endif
 
     if (c->state != conn_clsg) {
         c->needs_tx = true;
         conn_to_state(c, conn_clsg);
     }
+#endif
 }
+
 
 static void __attribute__((nonnull)) idle_alarm(struct q_conn * const c)
 {
@@ -1753,7 +1776,8 @@ void update_conf(struct q_conn * const c, const struct q_conn_conf * const conf)
     // XXX for testing, do a key flip and a migration ASAP (if enabled)
     c->do_key_flip = c->key_flips_enabled;
 #ifndef NO_MIGRATION
-    c->do_migration = !c->tp_peer.disable_active_migration;
+    if (c->dcid->seq == 0)
+        c->do_migration = !c->tp_peer.disable_active_migration;
 #endif
 #endif
 }
@@ -1787,16 +1811,27 @@ struct q_conn * new_conn(struct w_engine * const w,
         if (addr_idx == UINT16_MAX) {
             // find a src address of the same family as the peer address
             for (idx = 0; idx < w->addr_cnt; idx++)
-                if (w->ifaddr[idx].addr.af == peer->addr.af)
+                if (w->ifaddr[idx].addr.af == peer->addr.af &&
+                    (peer->addr.af == AF_INET ||
+                     w_is_private(&peer->addr) ==
+                         w_is_private(&w->ifaddr[idx].addr)))
                     break;
             if (idx == w->addr_cnt) {
                 warn(CRT, "peer address family not available locally");
                 goto fail;
             }
+#ifdef DEBUG_EXTRA
+            warn(ERR, "picked local addr %s%s%s",
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "[" : "",
+                 w_ntop(&w->ifaddr[idx].addr, ip_tmp),
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "]" : "");
+#endif
         }
     }
 
+#ifndef NO_ECN
     c->sockopt.enable_ecn = true;
+#endif
     c->sockopt.enable_udp_zero_checksums =
         get_conf_uncond(c->w, conf, enable_udp_zero_checksums);
 
@@ -1860,7 +1895,7 @@ struct q_conn * new_conn(struct w_engine * const w,
         update_conf(c, conf);
 
     // TODO most of these should become configurable via q_conn_conf
-    c->tp_mine.max_pkt = w_max_udp_payload(c->sock);
+    c->tp_mine.max_ups = w_max_udp_payload(c->sock);
     c->tp_mine.ack_del_exp = c->tp_peer.ack_del_exp = DEF_ACK_DEL_EXP;
     c->tp_mine.max_ack_del = c->tp_peer.max_ack_del = DEF_MAX_ACK_DEL;
     c->tp_mine.max_strm_data_uni = is_clnt(c) ? INIT_STRM_DATA_UNI : 0;
@@ -1875,32 +1910,38 @@ struct q_conn * new_conn(struct w_engine * const w,
                                  : (is_clnt(c) ? CIDS_MAX : CIDS_MAX / 2);
 
 #if !defined(NO_MIGRATION) && !defined(NO_SERVER)
-    // TODO: avoid encoding RFC1918 addresses
     if (!is_clnt(c) && peer && w->have_ip4 && w->have_ip6) {
         // populate tp_mine.pref_addr
-        const uint16_t other_af_idx =
-            w->ifaddr[idx].addr.af == AF_INET ? 0 : w->addr4_pos;
-        struct w_sock * const ws = get_local_sock_by_ipnp(
-            ped(w), &(struct w_sockaddr){.addr = w->ifaddr[other_af_idx].addr,
-                                         .port = port});
-
-        if (ws) {
+        const bool private_ok = w_is_private(&peer->addr);
+        for (idx = 0; idx < w->addr_cnt; idx++) {
 #ifdef DEBUG_EXTRA
-            warn(DBG, "other socket is %s%s%s:%u",
-                 w->ifaddr[other_af_idx].addr.af == AF_INET6 ? "[" : "",
-                 w_ntop(&w->ifaddr[other_af_idx].addr, ip_tmp),
-                 w->ifaddr[other_af_idx].addr.af == AF_INET6 ? "]" : "",
-                 bswap16(port));
+            warn(ERR, "%sprivate candidate socket is %s%s%s:%u",
+                 w_is_private(&w->ifaddr[idx].addr) ? "" : "non-",
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "[" : "",
+                 w_ntop(&w->ifaddr[idx].addr, ip_tmp),
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "]" : "", bswap16(port));
 #endif
-            memcpy(&c->tp_mine.pref_addr.addr4,
-                   w->ifaddr[idx].addr.af == AF_INET ? &c->sock->ws_loc
-                                                     : &ws->ws_loc,
-                   sizeof(c->tp_mine.pref_addr.addr4));
-            memcpy(&c->tp_mine.pref_addr.addr6,
-                   w->ifaddr[idx].addr.af == AF_INET6 ? &c->sock->ws_loc
-                                                      : &ws->ws_loc,
-                   sizeof(c->tp_mine.pref_addr.addr6));
+            if (private_ok == w_is_private(&w->ifaddr[idx].addr) &&
+                ((w->ifaddr[idx].addr.af == AF_INET &&
+                  c->tp_mine.pref_addr.addr4.addr.af == 0) ||
+                 (w->ifaddr[idx].addr.af == AF_INET6 &&
+                  c->tp_mine.pref_addr.addr6.addr.af == 0))) {
+                struct w_sock * const ws = get_local_sock_by_ipnp(
+                    ped(w), &(struct w_sockaddr){.addr = w->ifaddr[idx].addr,
+                                                 .port = port});
+                if (w->ifaddr[idx].addr.af == AF_INET &&
+                    c->tp_mine.pref_addr.addr4.addr.af == 0)
+                    memcpy(&c->tp_mine.pref_addr.addr4, &ws->ws_loc,
+                           sizeof(c->tp_mine.pref_addr.addr4));
+                else
+                    memcpy(&c->tp_mine.pref_addr.addr6, &ws->ws_loc,
+                           sizeof(c->tp_mine.pref_addr.addr6));
+                break;
+            }
+        }
 
+        if (c->tp_mine.pref_addr.addr4.addr.af ||
+            c->tp_mine.pref_addr.addr6.addr.af) {
             c->max_cid_seq_out = c->tp_mine.pref_addr.cid.seq = 1;
             mk_rand_cid(&c->tp_mine.pref_addr.cid,
                         ped(c->w)->conf.server_cid_len, true);
@@ -1978,10 +2019,9 @@ void free_conn(struct q_conn * const c)
         conns_by_id_del(id);
     if (c->tp_mine.pref_addr.cid.in_cbi)
         conns_by_id_del(&c->tp_mine.pref_addr.cid);
-    if (c->oscid.in_cbi)
-        conns_by_id_del(&c->oscid);
+    if (c->odcid.in_cbi)
+        conns_by_id_del(&c->odcid);
 #endif
-
     if (c->holds_sock)
         // only close the socket for the final server connection
         w_close(c->sock);

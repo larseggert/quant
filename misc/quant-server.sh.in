@@ -12,22 +12,25 @@ function make_name() {
 
 export PATH="$PATH:~/bin"
 
-logdir=/var/www/html
+logdir=/mnt/www
 name="$logdir/log"
 new=$(make_name "$name.html")
 # %N only works on Linux
 [ -f "$new.html" ] && new="$new-"$(date +%N)
-mv "$name.html" "$new.html"
-mv "$name.qlog" "$new.qlog"
+[ -f "$name.html" ] && mv "$name.html" "$new.html"
+[ -f "$name.qlog" ] && mv "$name.qlog" "$new.qlog"
 
 # send email if we crashed
-if grep -E -i -q 'assertion failed|AddressSanitizer|runtime error|ACK_ECN' "$new"; then
+if grep -E -i -q 'assertion failed|AddressSanitizer|runtime error|ecn=CE|ecn=ETC1' "$new.html"; then
         mail -s "$new" lars@eggert.org -A "$new" < /dev/null
 fi
 
-cat <<-EOF > /var/www/html/.htaccess
+cat <<-EOF > "$logdir/.htaccess"
+Options Indexes
+DirectoryIndex
+IndexIgnore @eaDir .htaccess
 IndexIgnoreReset ON
-IndexOptions FancyIndexing SuppressIcon
+IndexOptions FancyIndexing SuppressIcon NameWidth=*
 IndexOrderDefault Descending Date
 RewriteRule ^log$ /$(basename "$new") [R]
 Header set Access-Control-Allow-Origin "*"
@@ -53,9 +56,7 @@ detect_stack_use_after_return=1:detect_leaks=1:check_initialization_order=1:\
 alloc_dealloc_mismatch=1:detect_invalid_pointer_pairs=1 \
 LSAN_OPTIONS=verbosity=1:log_threads=1 \
 UBSAN_OPTIONS=suppressions=misc/gcc-ubsan-suppressions.txt \
-bin/server -v5 -i ens5 -p 443 -p 4433 -p 4434 \
-    -d /usr/share/apache2/default-site \
-    -c /etc/letsencrypt/live/quant.eggert.org/fullchain.pem \
-    -k /etc/letsencrypt/live/quant.eggert.org/privkey.pem \
-    -q "$logdir" \
+bin/server -v5 -i enx00e04c68199d -p 443 -p 4433 -p 4434 \
+    -d "$logdir" -q "$logdir" -t 20 \
+    -c /mnt/certs/fullchain.pem -k /mnt/certs/privkey.pem \
     2>&1 | aha -s > "$name.html"

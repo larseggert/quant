@@ -5,7 +5,7 @@
 
 if [ -n "$TESTCASE" ]; then
     case "$TESTCASE" in
-    "versionnegotiation"|"handshake"|"transfer"|"retry"|"resumption"|"multiconnect"|"zerortt")
+    "versionnegotiation"|"handshake"|"transfer"|"retry"|"resumption"|"multiconnect"|"zerortt"|"chacha20")
         ;;
     *)
         exit 127
@@ -22,7 +22,7 @@ fi
 
 if [ "$ROLE" == "client" ]; then
     CLIENT_ARGS="-i eth0 -w -q $QLOGDIR -l $SSLKEYLOGFILE -t 150 \
-        -e 0xff00001b $CLIENT_ARGS"
+        -e 0xff00001c $CLIENT_ARGS"
 
     # Wait for the simulator to start up.
     /wait-for-it.sh sim:57832 -s -t 30
@@ -32,6 +32,9 @@ if [ "$ROLE" == "client" ]; then
     case "$TESTCASE" in
     "versionnegotiation")
         CLIENT_ARGS="-e 12345678 $CLIENT_ARGS"
+        ;;
+    "chacha20")
+        CLIENT_ARGS="-a $CLIENT_ARGS"
         ;;
     "resumption"|"zerortt")
         REQS=($REQUESTS)

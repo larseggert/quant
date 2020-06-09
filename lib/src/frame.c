@@ -30,14 +30,13 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/param.h>
+
+#ifndef NO_MIGRATION
 #include <sys/socket.h>
+#endif
 
 #ifdef __FreeBSD__
 #include <netinet/in.h>
-#endif
-
-#if !defined(PARTICLE) && !defined(RIOT_VERSION)
-#include <netinet/ip.h>
 #endif
 
 #include <picotls.h>
@@ -99,7 +98,7 @@ static void track_frame(struct pkt_meta * const m,
 #define dec1_chk(val, pos, end, c, type)                                       \
     do {                                                                       \
         if (unlikely(dec1((val), (pos), (end)) == false))                      \
-            err_close_return((c), ERR_FRAME_ENC, (type), "dec1 %s in %s:%u",   \
+            err_close_return((c), ERR_FRAM_ENC, (type), "dec1 %s in %s:%u",    \
                              #val, __FILE__, __LINE__);                        \
     } while (0)
 
@@ -108,7 +107,7 @@ static void track_frame(struct pkt_meta * const m,
     do {                                                                       \
         uint64_t _v;                                                           \
         if (unlikely(decv(&_v, (pos), (end)) == false))                        \
-            err_close_return((c), ERR_FRAME_ENC, (type), "decv %s in %s:%u",   \
+            err_close_return((c), ERR_FRAM_ENC, (type), "decv %s in %s:%u",    \
                              #val, __FILE__, __LINE__);                        \
         *(val) = (uint_t)_v;                                                   \
     } while (0)
@@ -116,8 +115,18 @@ static void track_frame(struct pkt_meta * const m,
 #define decb_chk(val, pos, end, len, c, type)                                  \
     do {                                                                       \
         if (unlikely(decb((val), (pos), (end), (len)) == false))               \
-            err_close_return((c), ERR_FRAME_ENC, (type), "decb %s in %s:%u",   \
+            err_close_return((c), ERR_FRAM_ENC, (type), "decb %s in %s:%u",    \
                              #val, __FILE__, __LINE__);                        \
+    } while (0)
+
+
+#define chk_finl_size(off, s, type)                                            \
+    do {                                                                       \
+        if (unlikely((off) > (s)->in_data_off - 1))                            \
+            err_close_return((s)->c, ERR_FINL_SIZE, (type),                    \
+                             "off %" PRIu " > %" PRIu, (off),                  \
+                             (s)->in_data_off - 1);                            \
+                                                                               \
     } while (0)
 
 
@@ -180,7 +189,7 @@ get_and_validate_strm(struct q_conn * const c,
 {
     if (is_uni(sid) && unlikely(is_srv_ini(sid) ==
                                 (ok_when_writer ? is_clnt(c) : !is_clnt(c))))
-        err_close(c, ERR_STREAM_STATE, type,
+        err_close(c, ERR_STRM_STAT, type,
                   "got frame 0x%02x for uni sid %" PRId " but am %s", type, sid,
                   conn_type(c));
     else {
@@ -195,8 +204,7 @@ get_and_validate_strm(struct q_conn * const c,
                 // we are supposed to open closed streams on RX of these frames
                 s = new_stream(c, sid);
             else
-                err_close(c, ERR_STREAM_STATE, type, "unknown strm %" PRId,
-                          sid);
+                err_close(c, ERR_STRM_STAT, type, "unknown strm %" PRId, sid);
         }
         return s;
     }
@@ -251,8 +259,7 @@ dec_stream_or_crypto_frame(const uint8_t type,
     if (unlikely(type == FRM_CRY)) {
         const epoch_t e = epoch_for_pkt_type(m->hdr.type);
         if (unlikely(c->cstrms[e] == 0))
-            err_close_return(c, ERR_STREAM_STATE, type, "epoch %u abandoned",
-                             e);
+            err_close_return(c, ERR_STRM_STAT, type, "epoch %u abandoned", e);
         sid = crpt_strm_id(e);
         m->strm = c->cstrms[e];
     } else {
@@ -270,7 +277,7 @@ dec_stream_or_crypto_frame(const uint8_t type,
     if (is_set(F_STREAM_LEN, type) || unlikely(type == FRM_CRY)) {
         decv_chk(&l, pos, end, c, type);
         if (unlikely(*pos + l > end))
-            err_close_return(c, ERR_FRAME_ENC, type, "illegal strm len");
+            err_close_return(c, ERR_FRAM_ENC, type, "illegal strm len");
     } else
         // stream data extends to end of packet
         l = (uint16_t)(end - *pos);
@@ -278,7 +285,7 @@ dec_stream_or_crypto_frame(const uint8_t type,
     const dint_t max = max_sid(sid, c);
     if (unlikely(sid > max)) {
         log_stream_or_crypto_frame(false, m, type, sid, true, 0);
-        err_close_return(c, ERR_STREAM_ID, type, "sid %" PRId " > max %" PRId,
+        err_close_return(c, ERR_STRM_LIMT, type, "sid %" PRId " > max %" PRId,
                          sid, max);
     }
 
@@ -314,7 +321,7 @@ dec_stream_or_crypto_frame(const uint8_t type,
 
         if (unlikely(is_srv_ini(sid) != is_clnt(c))) {
             log_stream_or_crypto_frame(false, m, type, sid, true, 0);
-            err_close_return(c, ERR_STREAM_STATE, type,
+            err_close_return(c, ERR_STRM_STAT, type,
                              "got sid %" PRId " but am %s", sid, conn_type(c));
         }
 
@@ -327,14 +334,8 @@ dec_stream_or_crypto_frame(const uint8_t type,
             m->strm_off + strm_data_len_adj(m->strm_data_len)) {
 
         if (unlikely(m->strm->state == strm_hcrm ||
-                     m->strm->state == strm_clsd)) {
-            warn(NTE,
-                 "ignoring STREAM frame for %s strm " FMT_SID " on %s conn %s",
-                 strm_state_str[m->strm->state], sid, conn_type(c),
-                 cid_str(c->scid));
-            track_sd_frame(ign, true);
-            goto done;
-        }
+                     m->strm->state == strm_clsd))
+            chk_finl_size(m->strm_off, m->strm, type);
 
         if (unlikely(m->strm->in_data_off > m->strm_off))
             // already-received data at the beginning of the frame, trim
@@ -461,10 +462,10 @@ dec_stream_or_crypto_frame(const uint8_t type,
 done:
     log_stream_or_crypto_frame(false, m, type, sid, true, kind);
 
-    if (m->strm && type != FRM_CRY &&
-        m->strm_off + strm_data_len_adj(m->strm_data_len) >
-            m->strm->in_data_max)
-        err_close_return(c, ERR_FLOW_CONTROL, type,
+    if (m->strm && likely(type != FRM_CRY) &&
+        unlikely(m->strm_off + strm_data_len_adj(m->strm_data_len) >
+                 m->strm->in_data_max - 1))
+        err_close_return(c, ERR_FC, type,
                          "stream %" PRIu " off %" PRIu " >= in_data_max %" PRIu,
                          m->strm->id,
                          m->strm_off + strm_data_len_adj(m->strm_data_len),
@@ -497,6 +498,22 @@ shorten_ack_nr(const uint_t ack, const uint_t diff)
 #endif
 
 
+#ifndef NO_ECN
+static void __attribute__((nonnull)) disable_ecn(struct q_conn * const c)
+{
+    c->sockopt.enable_ecn = false;
+    w_set_sockopt(c->sock, &c->sockopt);
+}
+
+
+#if 0
+#define log_ecn(msg, e)                                                        \
+    warn(ERR, "%s: not=%" PRIu ", ect0=%" PRIu ", ect1=%" PRIu ", ce=%" PRIu,  \
+         (msg), (e)[ECN_NOT], (e)[ECN_ECT0], (e)[ECN_ECT1], (e)[ECN_CE])
+#endif
+#endif
+
+
 static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
                                                    const uint8_t ** pos,
                                                    const uint8_t * const start,
@@ -522,7 +539,7 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
     // TODO: figure out a better way to handle huge ACK delays
     if (sizeof(uint64_t) != sizeof(uint_t) &&
         unlikely(ack_delay_raw > UINT32_MAX / 2))
-        err_close_return(c, ERR_FRAME_ENC, type, "ACK delay raw %" PRIu64,
+        err_close_return(c, ERR_FRAM_ENC, type, "ACK delay raw %" PRIu64,
                          ack_delay_raw);
 
     // handshake pkts always use the default ACK delay exponent
@@ -531,6 +548,7 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
                            : c->tp_peer.ack_del_exp;
     uint_t ack_delay = (uint_t)(ack_delay_raw << ade);
 
+#ifdef DEBUG_EXTRA
     if (unlikely(ack_delay_raw &&
                  (m->hdr.type == LH_INIT || m->hdr.type == LH_HSHK)))
         warn(WRN,
@@ -539,6 +557,7 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
     else if (unlikely(ack_delay > c->tp_peer.max_ack_del * US_PER_MS))
         warn(WRN, "ack_delay %" PRIu " > max_ack_del %" PRIu, ack_delay,
              c->tp_peer.max_ack_del * US_PER_MS);
+#endif
 
     uint_t ack_rng_cnt = 0;
     decv_chk(&ack_rng_cnt, pos, end, c, type);
@@ -547,19 +566,21 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
     const uint_t cum_ack = cum_ack_ival ? cum_ack_ival->hi : UINT_T_MAX;
 
     uint_t lg_ack = lg_ack_in_frm;
-    uint64_t lg_ack_in_frm_t = 0;
     bool got_new_ack = false;
+#ifndef NO_ECN
+    uint64_t lg_ack_in_frm_t = 0;
+    uint_t new_acked_ect0 = 0;
+#endif
     for (uint_t n = ack_rng_cnt + 1; n > 0; n--) {
         uint_t gap = 0;
         uint_t ack_rng = 0;
         decv_chk(&ack_rng, pos, end, c, type);
 
         if (unlikely(ack_rng > (UINT16_MAX << 4)))
-            err_close_return(c, ERR_INTERNAL, type, "ACK rng len %" PRIu,
-                             ack_rng);
+            err_close_return(c, ERR_INTL, type, "ACK rng len %" PRIu, ack_rng);
 
         if (unlikely(ack_rng > lg_ack))
-            err_close_return(c, ERR_FRAME_ENC, type,
+            err_close_return(c, ERR_FRAM_ENC, type,
                              "ACK rng len %" PRIu " > lg_ack %" PRIu, ack_rng,
                              lg_ack);
 
@@ -611,7 +632,7 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
             if (unlikely(acked == 0))
 #ifndef FUZZING
                 // this is just way too noisy when fuzzing
-                err_close_return(c, ERR_PROTOCOL_VIOLATION, type,
+                err_close_return(c, ERR_PV, type,
                                  "got ACK for %s pkt %" PRIu " never sent",
                                  pn_type_str(pn->type), ack);
 #else
@@ -622,20 +643,27 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
             if (unlikely(ack == lg_ack_in_frm)) {
                 // call this only for the largest ACK in the frame
                 on_ack_received_1(m_acked, ack_delay);
+#ifndef NO_ECN
                 lg_ack_in_frm_t = m_acked->t;
+#endif
             }
 
             on_pkt_acked(acked, m_acked);
 
+#ifndef NO_ECN
             // if the ACK'ed pkt was sent with ECT, verify peer and path support
             if (likely(c->sockopt.enable_ecn &&
-                       is_set(IPTOS_ECN_ECT0, acked->flags)) &&
-                unlikely(type != FRM_ACE)) {
-                warn(NTE, "ECN verification failed for %s conn %s",
-                     conn_type(c), cid_str(c->scid));
-                c->sockopt.enable_ecn = false;
-                w_set_sockopt(c->sock, &c->sockopt);
+                       is_set(ECN_ECT0, acked->flags))) {
+                if (unlikely(type != FRM_ACE)) {
+                    warn(WRN,
+                         "ECN verification failed for %s conn %s, no ECN "
+                         "counts rx'ed",
+                         conn_type(c), cid_str(c->scid));
+                    disable_ecn(c);
+                } else
+                    new_acked_ect0++;
             }
+#endif
 
         next_ack:
             if (likely(ack > 0))
@@ -650,8 +678,7 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
             if (unlikely((lg_ack - ack_rng) < gap + 2)) {
                 warn(DBG, "lg_ack=%" PRIu ", ack_rng=%" PRIu ", gap=%" PRIu,
                      lg_ack, ack_rng, -gap);
-                err_close_return(c, ERR_PROTOCOL_VIOLATION, type,
-                                 "illegal ACK frame");
+                err_close_return(c, ERR_PV, type, "illegal ACK frame");
             }
             lg_ack -= ack_rng + gap + 2;
         }
@@ -659,24 +686,56 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
 
     if (type == FRM_ACE) {
         // decode ECN
-        uint_t ect0_cnt = 0;
-        uint_t ect1_cnt = 0;
-        uint_t ce_cnt = 0;
-        decv_chk(&ect0_cnt, pos, end, c, type);
-        decv_chk(&ect1_cnt, pos, end, c, type);
-        decv_chk(&ce_cnt, pos, end, c, type);
+        uint_t ecn_cnt[ECN_MASK + 1] = {0};
+        decv_chk(&ecn_cnt[ECN_ECT0], pos, end, c, type);
+        decv_chk(&ecn_cnt[ECN_ECT1], pos, end, c, type);
+        decv_chk(&ecn_cnt[ECN_CE], pos, end, c, type);
         warn(INF,
              FRAM_IN "ECN" NRM " ect0=%s%" PRIu NRM " ect1=%s%" PRIu NRM
                      " ce=%s%" PRIu NRM,
-             ect0_cnt ? GRN : NRM, ect0_cnt, ect1_cnt ? GRN : NRM, ect1_cnt,
-             ce_cnt ? GRN : NRM, ce_cnt);
-        // TODO: add sanity check whether markings make sense
+             ecn_cnt[ECN_ECT0] ? GRN : NRM, ecn_cnt[ECN_ECT0],
+             ecn_cnt[ECN_ECT1] ? GRN : NRM, ecn_cnt[ECN_ECT1],
+             ecn_cnt[ECN_CE] ? GRN : NRM, ecn_cnt[ECN_CE]);
 
-        // ProcessECN
-        if (ce_cnt > pn->ce_cnt) {
-            pn->ce_cnt = ce_cnt;
-            congestion_event(c, lg_ack_in_frm_t);
+#ifndef NO_ECN
+        if (got_new_ack) {
+            // log_ecn("ref", pn->ecn_ref);
+            const uint_t ecn_inc[ECN_MASK + 1] = {
+                // ECN_NOT is not used
+                // [ECN_NOT] = ecn_cnt[ECN_NOT] - pn->ecn_ref[ECN_NOT],
+                [ECN_ECT0] = ecn_cnt[ECN_ECT0] - pn->ecn_ref[ECN_ECT0],
+                [ECN_ECT1] = ecn_cnt[ECN_ECT1] - pn->ecn_ref[ECN_ECT1],
+                [ECN_CE] = ecn_cnt[ECN_CE] - pn->ecn_ref[ECN_CE]};
+            // log_ecn("inc", ecn_inc);
+
+            if (unlikely(ecn_inc[ECN_ECT0] + ecn_inc[ECN_ECT1] +
+                             ecn_inc[ECN_CE] <
+                         new_acked_ect0)) {
+                warn(WRN,
+                     "ECN verification failed for %s conn %s, "
+                     "inc %" PRIu " + %" PRIu " + %" PRIu " < %" PRIu,
+                     conn_type(c), cid_str(c->scid), ecn_inc[ECN_ECT0],
+                     ecn_inc[ECN_ECT1], ecn_inc[ECN_CE], new_acked_ect0);
+                disable_ecn(c);
+            } else if (unlikely(ecn_inc[ECN_ECT0] + ecn_cnt[ECN_CE] <
+                                new_acked_ect0)) {
+                warn(WRN,
+                     "ECN verification failed for %s conn %s, "
+                     "ECT0 inc %" PRIu " + %" PRIu " < %" PRIu,
+                     conn_type(c), cid_str(c->scid), ecn_inc[ECN_ECT0],
+                     ecn_inc[ECN_CE], new_acked_ect0);
+                disable_ecn(c);
+                // NOTE: we don't verify ect1 since we never send it
+            } else {
+                if (ecn_cnt[ECN_CE] > pn->ecn_ref[ECN_CE])
+                    // ProcessECN
+                    congestion_event(c, lg_ack_in_frm_t);
+
+                // remember ECN counts
+                memcpy(pn->ecn_ref, ecn_cnt, sizeof(pn->ecn_ref));
+            }
         }
+#endif
     }
 
     if (got_new_ack)
@@ -731,7 +790,7 @@ dec_close_frame(const uint8_t type,
     poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 
     if (unlikely(reas_len != act_reas_len))
-        err_close_return(c, ERR_FRAME_ENC, type, "illegal reason len");
+        err_close_return(c, ERR_FRAM_ENC, type, "illegal reason len");
 
     if (c->state == conn_clsg) {
         conn_to_state(c, conn_drng);
@@ -1034,17 +1093,15 @@ dec_new_cid_frame(const uint8_t ** pos,
     const uint_t max_act_cids =
         c->tp_mine.act_cid_lim + (c->tp_peer.pref_addr.cid.len ? 1 : 0);
     if (likely(dup == false) && unlikely(cid_cnt(&c->dcids) > max_act_cids))
-        err_close_return(c, ERR_CONNECTION_ID_LIMIT, FRM_CID,
+        err_close_return(c, ERR_CID_LIMT, FRM_CID,
                          "illegal seq %" PRIu " (have %" PRIu "/%" PRIu ")",
                          dcid.seq, cid_cnt(&c->dcids), max_act_cids);
 
     if (unlikely(rpt > dcid.seq))
-        err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID,
-                         "illegal rpt %" PRIu, rpt);
+        err_close_return(c, ERR_PV, FRM_CID, "illegal rpt %" PRIu, rpt);
 
     if (unlikely(dcid.len > CID_LEN_MAX))
-        err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID, "illegal len %u",
-                         dcid.len);
+        err_close_return(c, ERR_PV, FRM_CID, "illegal len %u", dcid.len);
 
     if (rpt > c->rpt_max) {
         retire_prior_to(&c->dcids, rpt);
@@ -1064,7 +1121,7 @@ dec_new_cid_frame(const uint8_t ** pos,
     }
 
 #else
-    err_close_return(c, ERR_PROTOCOL_VIOLATION, FRM_CID,
+    err_close_return(c, ERR_PV, FRM_CID,
                      "migration disabled but got NEW_CONNECTION_ID");
 #endif
 
@@ -1096,6 +1153,7 @@ dec_reset_stream_frame(const uint8_t ** pos,
     if (unlikely(s == 0))
         return true;
 
+    chk_finl_size(off, s, FRM_RST);
     strm_to_state(s, strm_clsd);
 
     return true;
@@ -1123,7 +1181,7 @@ dec_retire_cid_frame(const uint8_t ** pos,
     else if (c->scid->seq == scid->seq) {
         struct cid * const next_scid = next_cid(&c->scids, scid->seq);
         if (unlikely(next_scid == 0))
-            err_close_return(c, ERR_INTERNAL, FRM_RTR, "no next scid");
+            err_close_return(c, ERR_INTL, FRM_RTR, "no next scid");
         c->scid = next_scid;
     }
     conns_by_id_del(scid);
@@ -1155,7 +1213,7 @@ dec_new_token_frame(const uint8_t ** pos,
          tok_str(tok, tok_len));
 
     if (unlikely(tok_len != act_tok_len))
-        err_close_return(c, ERR_FRAME_ENC, FRM_TOK, "illegal tok len");
+        err_close_return(c, ERR_FRAM_ENC, FRM_TOK, "illegal tok len");
 
     // TODO: actually do something with the token
 
@@ -1213,20 +1271,20 @@ bool dec_frames(struct q_conn * const c,
 
         // check that frame type is allowed in this pkt type
         static const struct frames frame_ok[] = {
-            [ep_init] = bitset_t_initializer(
-                1 << FRM_PAD | 1 << FRM_PNG | 1 << FRM_CRY | 1 << FRM_CLQ |
-                1 << FRM_CLA | 1 << FRM_ACK | 1 << FRM_ACE),
+            [ep_init] = bitset_t_initializer(1 << FRM_PAD | 1 << FRM_PNG |
+                                             1 << FRM_CRY | 1 << FRM_CLQ |
+                                             1 << FRM_ACK | 1 << FRM_ACE),
             [ep_0rtt] = bitset_t_initializer(
                 1 << FRM_PAD | 1 << FRM_PNG | 1 << FRM_RST | 1 << FRM_STP |
-                1 << FRM_TOK | 1 << FRM_STR | 1 << FRM_STR_09 |
-                1 << FRM_STR_0a | 1 << FRM_STR_0b | 1 << FRM_STR_0c |
-                1 << FRM_STR_0d | 1 << FRM_STR_0e | 1 << FRM_STR_0f |
-                1 << FRM_MCD | 1 << FRM_MSD | 1 << FRM_MSB | 1 << FRM_MSU |
-                1 << FRM_CDB | 1 << FRM_SDB | 1 << FRM_SBB | 1 << FRM_SBU |
-                1 << FRM_CID | 1 << FRM_RTR | 1 << FRM_PCL | 1 << FRM_PRP),
-            [ep_hshk] = bitset_t_initializer(
-                1 << FRM_PAD | 1 << FRM_PNG | 1 << FRM_CRY | 1 << FRM_CLQ |
-                1 << FRM_CLA | 1 << FRM_ACK | 1 << FRM_ACE),
+                1 << FRM_STR | 1 << FRM_STR_09 | 1 << FRM_STR_0a |
+                1 << FRM_STR_0b | 1 << FRM_STR_0c | 1 << FRM_STR_0d |
+                1 << FRM_STR_0e | 1 << FRM_STR_0f | 1 << FRM_MCD |
+                1 << FRM_MSD | 1 << FRM_MSB | 1 << FRM_MSU | 1 << FRM_CDB |
+                1 << FRM_SDB | 1 << FRM_SBB | 1 << FRM_SBU | 1 << FRM_CID |
+                1 << FRM_PCL),
+            [ep_hshk] = bitset_t_initializer(1 << FRM_PAD | 1 << FRM_PNG |
+                                             1 << FRM_CRY | 1 << FRM_CLQ |
+                                             1 << FRM_ACK | 1 << FRM_ACE),
             [ep_data] = bitset_t_initializer(
                 1 << FRM_PAD | 1 << FRM_PNG | 1 << FRM_CRY | 1 << FRM_CLQ |
                 1 << FRM_CLA | 1 << FRM_ACK | 1 << FRM_ACE | 1 << FRM_RST |
@@ -1241,9 +1299,8 @@ bool dec_frames(struct q_conn * const c,
             unlikely(bit_isset(FRM_MAX, type,
                                &frame_ok[epoch_for_pkt_type(m->hdr.type)]) ==
                      false))
-            err_close_return(c, ERR_PROTOCOL_VIOLATION, type,
-                             "0x%02x frame not OK in %s pkt", type,
-                             pkt_type_str(m->hdr.flags, &m->hdr.vers));
+            err_close_return(c, ERR_PV, type, "0x%02x frame not OK in %s pkt",
+                             type, pkt_type_str(m->hdr.flags, &m->hdr.vers));
 
         bool ok;
         switch (type) {
@@ -1362,14 +1419,14 @@ bool dec_frames(struct q_conn * const c,
             break;
 
         default:
-            err_close_return(c, ERR_FRAME_ENC, type,
+            err_close_return(c, ERR_FRAM_ENC, type,
                              "unknown 0x%02x frame at pos %u", type,
                              (uint16_t)(pos - v->buf));
         }
 
         if (unlikely(ok == false))
             // there was an error parsing a frame
-            err_close_return(c, ERR_FRAME_ENC, type,
+            err_close_return(c, ERR_FRAM_ENC, type,
                              "error parsing 0x%02x frame at pos %lu", type,
                              pos - v->buf);
 
@@ -1421,7 +1478,7 @@ uint16_t max_frame_len(const uint8_t type)
         // case FRM_CRY:
 
     case FRM_TOK:
-        // only true on TX; update when make_rtry_tok() changes
+        // only true on TX; update when mk_rtry_tok() changes
         len += sizeof(uint_t) + PTLS_MAX_DIGEST_SIZE + CID_LEN_MAX;
         break;
 
@@ -1488,7 +1545,13 @@ bool enc_ack_frame(struct q_conn_info * const ci,
                    struct pn_space * const pn)
 {
     const uint8_t type =
-        likely(pn->ect0_cnt || pn->ect1_cnt || pn->ce_cnt) ? FRM_ACE : FRM_ACK;
+#ifndef NO_ECN
+        (pn->ecn_rxed[ECN_ECT0] || pn->ecn_rxed[ECN_ECT1] ||
+         pn->ecn_rxed[ECN_CE])
+            ? FRM_ACE
+            :
+#endif
+            FRM_ACK;
     uint8_t * const init_pos = *pos;
     if (unlikely(*pos + 1 > end))
         goto no_ack;
@@ -1556,17 +1619,20 @@ bool enc_ack_frame(struct q_conn_info * const ci,
         prev_lo = b->lo;
     }
 
+#ifndef NO_ECN
     if (type == FRM_ACE) {
         // encode ECN
-        encv_chk(pos, end, pn->ect0_cnt);
-        encv_chk(pos, end, pn->ect1_cnt);
-        encv_chk(pos, end, pn->ce_cnt);
+        encv_chk(pos, end, pn->ecn_rxed[ECN_ECT0]);
+        encv_chk(pos, end, pn->ecn_rxed[ECN_ECT1]);
+        encv_chk(pos, end, pn->ecn_rxed[ECN_CE]);
         warn(INF,
              FRAM_OUT "ECN" NRM " ect0=%s%" PRIu NRM " ect1=%s%" PRIu NRM
                       " ce=%s%" PRIu NRM,
-             pn->ect0_cnt ? BLU : NRM, pn->ect0_cnt, pn->ect1_cnt ? BLU : NRM,
-             pn->ect1_cnt, pn->ce_cnt ? BLU : NRM, pn->ce_cnt);
+             pn->ecn_rxed[ECN_ECT0] ? BLU : NRM, pn->ecn_rxed[ECN_ECT0],
+             pn->ecn_rxed[ECN_ECT1] ? BLU : NRM, pn->ecn_rxed[ECN_ECT1],
+             pn->ecn_rxed[ECN_CE] ? BLU : NRM, pn->ecn_rxed[ECN_CE]);
     }
+#endif
 
     timeouts_del(ped(c->w)->wheel, &c->ack_alarm);
     bit_zero(FRM_MAX, &pn->rx_frames);
@@ -1584,23 +1650,25 @@ no_ack:;
 
 void calc_lens_of_stream_or_crypto_frame(struct pkt_meta * const m,
                                          const struct w_iov * const v,
-                                         const struct q_stream * const s)
+                                         const struct q_stream * const s,
+                                         const bool rtx)
 {
     const bool enc_strm = s->id >= 0;
     m->strm_data_len = (uint16_t)(v->len - m->strm_data_pos);
     uint16_t hlen = 1; // type byte
 
+    const uint_t off = unlikely(rtx) ? m->strm_off : s->out_data;
     if (likely(enc_strm)) {
         hlen += varint_size((uint_t)s->id);
-        if (likely(s->out_data))
-            hlen += varint_size(s->out_data);
-        if (m->strm_data_len != s->c->rec.max_pkt_size - AEAD_LEN - DATA_OFFSET)
+        if (likely(off))
+            hlen += varint_size(off);
+        if (unlikely(rtx && is_set(F_STREAM_LEN, v->buf[m->strm_frm_pos])) ||
+            m->strm_data_len != s->c->rec.max_ups - AEAD_LEN - DATA_OFFSET)
             hlen += varint_size(m->strm_data_len);
     } else {
-        hlen += varint_size(s->out_data);
+        hlen += varint_size(off);
         hlen += varint_size(m->strm_data_len);
     }
-
     m->strm_frm_pos = m->strm_data_pos - hlen;
 }
 
@@ -1625,7 +1693,7 @@ void enc_stream_or_crypto_frame(uint8_t ** pos,
             type |= F_STREAM_OFF;
         encv(pos, end, m->strm_off);
     }
-    if (m->strm_data_len != s->c->rec.max_pkt_size - AEAD_LEN - DATA_OFFSET ||
+    if (m->strm_data_len != s->c->rec.max_ups - AEAD_LEN - DATA_OFFSET ||
         unlikely(!enc_strm)) {
         if (likely(enc_strm))
             type |= F_STREAM_LEN;
@@ -1861,8 +1929,6 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
 
     const uint_t max_scid = max_seq(&c->scids);
     const uint_t min_scid = min_seq(&c->scids);
-    warn(ERR, "max_scid %" PRIu " min_scid %" PRIu " max_cid_seq_out %" PRIu,
-         max_scid, min_scid, c->max_cid_seq_out);
     c->max_cid_seq_out = MAX(min_scid, c->max_cid_seq_out + 1);
     struct cid ncid = {.seq = c->max_cid_seq_out};
 

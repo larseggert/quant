@@ -11,9 +11,11 @@ foreach(TARGET diet conn hex2str)
   add_executable(test_${TARGET} test_${TARGET}.c
     ${CMAKE_CURRENT_BINARY_DIR}/dummy.key ${CMAKE_CURRENT_BINARY_DIR}/dummy.crt)
   target_link_libraries(test_${TARGET}
-    PRIVATE lib${PROJECT_NAME} picotls-minicrypto
+    PRIVATE lib${PROJECT_NAME} picotls-openssl
   )
   target_include_directories(test_${TARGET}
+    SYSTEM PRIVATE
+      ${OPENSSL_ROOT_DIR}/include
     PRIVATE
       ${PROJECT_BINARY_DIR}/external/include
       ${PROJECT_SOURCE_DIR}/lib/src
@@ -74,10 +76,10 @@ if(HAVE_BENCHMARK_H)
     if(${TARGET} MATCHES ".*-warp")
       string(REGEX REPLACE "-warp$" "" SOURCE ${TARGET})
       add_executable(${TARGET} ${SOURCE}.cc)
-      target_link_libraries(${TARGET} PUBLIC benchmark pthread libquant-warp)
+      target_link_libraries(${TARGET} PUBLIC benchmark libquant-warp)
     else()
       add_executable(${TARGET} ${TARGET}.cc)
-      target_link_libraries(${TARGET} PUBLIC benchmark pthread libquant)
+      target_link_libraries(${TARGET} PUBLIC benchmark libquant)
     endif()
     if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang" AND
        CMAKE_C_COMPILER_VERSION VERSION_GREATER 9)

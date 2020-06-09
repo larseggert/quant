@@ -96,7 +96,7 @@ struct ival * diet_find(struct diet * const d, const uint_t n)
 ///
 /// @return     Newly allocated ival struct [n..n].
 ///
-static inline struct ival * make_ival(const uint_t n, const uint64_t t)
+static inline struct ival * mk_ival(const uint_t n, const uint64_t t)
 {
     struct ival * const i = calloc(1, sizeof(*i));
     ensure(i, "could not calloc");
@@ -179,7 +179,7 @@ diet_insert(struct diet * const d, const uint_t n, const uint64_t t)
     }
 
 new_ival:;
-    struct ival * const i = make_ival(n, t);
+    struct ival * const i = mk_ival(n, t);
     splay_insert(diet, d, i);
     return i;
 }
@@ -195,7 +195,7 @@ new_ival:;
 static void __attribute__((nonnull))
 split_root(struct diet * const d, const uint_t lo, const uint_t hi)
 {
-    struct ival * const i = make_ival(splay_root(d)->lo, splay_root(d)->t);
+    struct ival * const i = mk_ival(splay_root(d)->lo, splay_root(d)->t);
     splay_count(d)++;
     i->hi = lo - 1;
     splay_root(d)->lo = hi + 1;

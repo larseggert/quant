@@ -34,10 +34,6 @@
 #include <netinet/in.h>
 #endif
 
-#if !defined(PARTICLE) && !defined(RIOT_VERSION)
-#include <netinet/ip.h>
-#endif
-
 #include <picotls.h>
 #include <quant/quant.h>
 #include <timeout.h>
@@ -65,11 +61,7 @@
 
 void log_pkt(const char * const dir,
              const struct w_iov * const v,
-             const struct w_sockaddr * const saddr
-#ifdef FUZZING
-             __attribute__((unused))
-#endif
-             ,
+             const struct w_sockaddr * const saddr,
              const uint8_t * const tok,
              const uint16_t tok_len,
              const uint8_t * const rit)
@@ -84,52 +76,55 @@ void log_pkt(const char * const dir,
     mk_cid_str(NTE, &m->hdr.scid, scid_str);
     const char * const tok_str = tok_len ? tok_str(tok, tok_len) : "";
     const char * const rit_str = rit ? rit_str(rit) : "";
+    const char * const lbr = v->wv_af == AF_INET6 ? "[" : "";
+    const char * const rbr = v->wv_af == AF_INET6 ? "]" : "";
 
     if (*dir == 'R') {
+        static const char * const ecn_str[] = {[ECN_NOT] = "",
+                                               [ECN_ECT1] = "ECT1",
+                                               [ECN_ECT0] = "ECT0",
+                                               [ECN_CE] = "CE"};
+        const uint8_t ecn_mark = v->flags & ECN_MASK;
+        const char * const ecn = ecn_mark ? " ecn=" : "";
         if (is_lh(m->hdr.flags)) {
             if (m->hdr.vers == 0)
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32 " dcid=%s scid=%s",
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, v->len,
+                      lbr, ip, rbr, port, v->len, ecn, ecn_str[ecn_mark],
                       m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str);
             else if (m->hdr.type == LH_RTRY)
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32
                               " dcid=%s scid=%s tok=%s rit=%s",
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, v->len,
+                      lbr, ip, rbr, port, v->len, ecn, ecn_str[ecn_mark],
                       m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str,
                       tok_str, rit_str);
             else if (m->hdr.type == LH_INIT)
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32
                               " dcid=%s scid=%s tok=%s len=%u nr=" BLU
                               "%" PRIu NRM,
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, v->len,
+                      lbr, ip, rbr, port, v->len, ecn, ecn_str[ecn_mark],
                       m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str,
                       tok_str, m->hdr.len, m->hdr.nr);
             else
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32
                               " dcid=%s scid=%s len=%u nr=" BLU "%" PRIu NRM,
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, v->len,
+                      lbr, ip, rbr, port, v->len, ecn, ecn_str[ecn_mark],
                       m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str,
                       m->hdr.len, m->hdr.nr);
         } else
             twarn(NTE,
-                  BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                  BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                           "%s " NRM "kyph=%u spin=%u dcid=%s nr=" BLU
                           "%" PRIu NRM,
-                  v->wv_af == AF_INET6 ? "[" : "", ip,
-                  v->wv_af == AF_INET6 ? "]" : "", port, v->len, m->hdr.flags,
-                  pts, is_set(SH_KYPH, m->hdr.flags),
+                  lbr, ip, rbr, port, v->len, ecn, ecn_str[ecn_mark],
+                  m->hdr.flags, pts, is_set(SH_KYPH, m->hdr.flags),
                   is_set(SH_SPIN, m->hdr.flags), dcid_str, m->hdr.nr);
 
     } else {
@@ -139,41 +134,35 @@ void log_pkt(const char * const dir,
                 twarn(NTE,
                       BLD GRN "TX" NRM " to=%s%s%s:%u 0x%02x=" GRN "%s " NRM
                               "vers=0x%0" PRIx32 " dcid=%s scid=%s",
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, m->hdr.flags, pts,
-                      m->hdr.vers, dcid_str, scid_str);
+                      lbr, ip, rbr, port, m->hdr.flags, pts, m->hdr.vers,
+                      dcid_str, scid_str);
             else if (m->hdr.type == LH_RTRY)
                 twarn(NTE,
                       BLD GRN "TX" NRM " to=%s%s%s:%u 0x%02x=" GRN "%s " NRM
                               "vers=0x%0" PRIx32
                               " dcid=%s scid=%s tok=%s rit=%s",
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, m->hdr.flags, pts,
-                      m->hdr.vers, dcid_str, scid_str, tok_str, rit_str);
+                      lbr, ip, rbr, port, m->hdr.flags, pts, m->hdr.vers,
+                      dcid_str, scid_str, tok_str, rit_str);
             else if (m->hdr.type == LH_INIT)
                 twarn(NTE,
                       BLD GRN "TX" NRM " to=%s%s%s:%u 0x%02x=" GRN "%s " NRM
                               "vers=0x%0" PRIx32
                               " dcid=%s scid=%s tok=%s len=%u nr=" GRN
                               "%" PRIu NRM,
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, m->hdr.flags, pts,
-                      m->hdr.vers, dcid_str, scid_str, tok_str, m->hdr.len,
-                      m->hdr.nr);
+                      lbr, ip, rbr, port, m->hdr.flags, pts, m->hdr.vers,
+                      dcid_str, scid_str, tok_str, m->hdr.len, m->hdr.nr);
             else
                 twarn(NTE,
                       BLD GRN "TX" NRM " to=%s%s%s:%u 0x%02x=" GRN "%s " NRM
                               "vers=0x%0" PRIx32
                               " dcid=%s scid=%s len=%u nr=" GRN "%" PRIu NRM,
-                      v->wv_af == AF_INET6 ? "[" : "", ip,
-                      v->wv_af == AF_INET6 ? "]" : "", port, m->hdr.flags, pts,
-                      m->hdr.vers, dcid_str, scid_str, m->hdr.len, m->hdr.nr);
+                      lbr, ip, rbr, port, m->hdr.flags, pts, m->hdr.vers,
+                      dcid_str, scid_str, m->hdr.len, m->hdr.nr);
         } else
             twarn(NTE,
                   BLD GRN "TX" NRM " to=%s%s%s:%u 0x%02x=" GRN "%s " NRM
                           "kyph=%u spin=%u dcid=%s nr=" GRN "%" PRIu NRM,
-                  v->wv_af == AF_INET6 ? "[" : "", ip,
-                  v->wv_af == AF_INET6 ? "]" : "", port, m->hdr.flags, pts,
+                  lbr, ip, rbr, port, m->hdr.flags, pts,
                   is_set(SH_KYPH, m->hdr.flags), is_set(SH_SPIN, m->hdr.flags),
                   dcid_str, m->hdr.nr);
     }
@@ -183,9 +172,10 @@ void log_pkt(const char * const dir,
 
 void validate_pmtu(struct q_conn * const c)
 {
-    c->rec.max_pkt_size =
-        MIN(w_max_udp_payload(c->sock), (uint16_t)c->tp_peer.max_pkt);
-    warn(NTE, "PMTU %u validated", c->rec.max_pkt_size);
+    c->rec.max_ups =
+        MIN(w_max_udp_payload(c->sock), (uint16_t)c->tp_peer.max_ups);
+    warn(NTE, "PMTU %u validated", c->rec.max_ups);
+    c->rec.max_ups_af = c->peer.addr.af;
     c->pmtud_pkt = UINT16_MAX;
 }
 
@@ -199,9 +189,8 @@ can_coalesce_pkt_types(const uint8_t a, const uint8_t b)
 }
 
 
-uint16_t coalesce(struct w_iov_sq * const q,
-                  const uint16_t max_pkt_size,
-                  const bool do_pmtud)
+uint16_t
+coalesce(struct w_iov_sq * const q, const uint16_t max_ups, const bool do_pmtud)
 {
     uint16_t pmtud_pkt = UINT16_MAX;
     struct w_iov * v = sq_first(q);
@@ -221,12 +210,11 @@ uint16_t coalesce(struct w_iov_sq * const q,
 #endif
             struct w_iov * const next_next = sq_next(next, next);
             // do we have space? do the packet types make sense to coalesce?
-            if (v->len + next->len > max_pkt_size) {
+            if (v->len + next->len > max_ups) {
                 warn(DBG,
                      "cannot coalesce %u-byte %s pkt behind %u-byte %s pkt, "
                      "limit %u",
-                     next->len, next_type_str, v->len, outer_type_str,
-                     max_pkt_size);
+                     next->len, next_type_str, v->len, outer_type_str, max_ups);
                 skipped_types |= pkt_type(*next->buf);
                 prev = next;
             } else if (can_coalesce_pkt_types(pkt_type(inner_flags),
@@ -272,20 +260,22 @@ uint16_t coalesce(struct w_iov_sq * const q,
             next = next_next;
         }
 
-        if (do_pmtud && pmtud_pkt == UINT16_MAX && v->len < max_pkt_size) {
+        if (do_pmtud && pmtud_pkt == UINT16_MAX && v->len < max_ups) {
             warn(NTE,
                  "testing PMTU %u with %s pkt %u using %u bytes rand padding",
-                 max_pkt_size, pkt_type_str(*v->buf, v->buf + 1),
-                 v->user_data & 0x3fff, max_pkt_size - v->len);
-            rand_bytes(v->buf + v->len, max_pkt_size - v->len);
+                 max_ups, pkt_type_str(*v->buf, v->buf + 1),
+                 v->user_data & 0x3fff, max_ups - v->len);
+            rand_bytes(v->buf + v->len, max_ups - v->len);
             *(v->buf + v->len) &= ~LH;
-            v->len = max_pkt_size;
+            v->len = max_ups;
             pmtud_pkt = v->user_data;
         }
 
         v = sq_next(v, next);
+#ifdef DEBUG_EXTRA
         if (v)
             warn(DBG, "coalescing txq next");
+#endif
     }
 
     return pmtud_pkt;
@@ -441,13 +431,7 @@ bool enc_pkt(struct q_stream * const s,
     const epoch_t epoch = unlikely(pmtud) ? ep_hshk : strm_epoch(s);
     struct pn_space * const pn = m->pn = pn_for_epoch(c, epoch);
 
-    m->txed = true;
-#ifndef NO_SERVER
-    if (unlikely(c->tx_rtry))
-        m->hdr.nr = 0;
-    else
-#endif
-        if (unlikely(pn->lg_sent == UINT_T_MAX))
+    if (unlikely(pn->lg_sent == UINT_T_MAX))
         // next pkt nr
         m->hdr.nr = pn->lg_sent = 0;
     else
@@ -455,17 +439,8 @@ bool enc_pkt(struct q_stream * const s,
 
     switch (epoch) {
     case ep_init:
-#ifndef NO_SERVER
-        if (unlikely(c->tx_rtry))
-            m->hdr.type = LH_RTRY;
-        else
-#endif
-            m->hdr.type = LH_INIT;
+        m->hdr.type = LH_INIT;
         m->hdr.flags = LH | m->hdr.type;
-#ifndef NO_SERVER
-        if (unlikely(c->tx_rtry))
-            m->hdr.flags |= (uint8_t)w_rand_uniform32(0x0f);
-#endif
         break;
     case ep_0rtt:
         if (is_clnt(c)) {
@@ -491,9 +466,9 @@ bool enc_pkt(struct q_stream * const s,
 
     uint8_t * pos = v->buf;
     if (enc_data)
-        calc_lens_of_stream_or_crypto_frame(m, v, s);
+        calc_lens_of_stream_or_crypto_frame(m, v, s, rtx);
     const uint8_t * const end =
-        v->buf + (enc_data || rtx ? m->strm_frm_pos : v->len);
+        v->buf + ((enc_data || rtx) ? m->strm_frm_pos : v->len);
     enc1(&pos, end, m->hdr.flags);
 
     if (unlikely(is_lh(m->hdr.flags))) {
@@ -504,16 +479,11 @@ bool enc_pkt(struct q_stream * const s,
         if (m->hdr.type == LH_INIT)
             encv(&pos, end, is_clnt(c) ? c->tok_len : 0);
 
-        if (((is_clnt(c) && m->hdr.type == LH_INIT) ||
-             m->hdr.type == LH_RTRY) &&
-            c->tok_len)
+        if (is_clnt(c) && m->hdr.type == LH_INIT && c->tok_len)
             encb(&pos, end, c->tok, c->tok_len);
 
-        if (m->hdr.type != LH_RTRY) {
-            // leave space for length field (2 bytes is enough)
-            len_pos = pos;
-            pos += 2;
-        }
+        len_pos = pos;
+        pos += 2;
 
     } else {
         cid_cpy(&m->hdr.dcid, c->dcid);
@@ -521,22 +491,20 @@ bool enc_pkt(struct q_stream * const s,
     }
 
     uint8_t * pkt_nr_pos = 0;
-    if (likely(m->hdr.type != LH_RTRY)) {
-        pkt_nr_pos = pos;
-        switch ((pnl - 1) & HEAD_PNRL_MASK) {
-        case 0:
-            enc1(&pos, end, m->hdr.nr & UINT64_C(0xff));
-            break;
-        case 1:
-            enc2(&pos, end, m->hdr.nr & UINT64_C(0xffff));
-            break;
-        case 2:
-            enc3(&pos, end, m->hdr.nr & UINT64_C(0xffffff));
-            break;
-        case 3:
-            enc4(&pos, end, m->hdr.nr & UINT64_C(0xffffffff));
-            break;
-        }
+    pkt_nr_pos = pos;
+    switch ((pnl - 1) & HEAD_PNRL_MASK) {
+    case 0:
+        enc1(&pos, end, m->hdr.nr & UINT64_C(0xff));
+        break;
+    case 1:
+        enc2(&pos, end, m->hdr.nr & UINT64_C(0xffff));
+        break;
+    case 2:
+        enc3(&pos, end, m->hdr.nr & UINT64_C(0xffffff));
+        break;
+    case 3:
+        enc4(&pos, end, m->hdr.nr & UINT64_C(0xffffffff));
+        break;
     }
 
     m->hdr.hdr_len = (uint16_t)(pos - v->buf);
@@ -545,6 +513,12 @@ bool enc_pkt(struct q_stream * const s,
         unlikely(c->tx_path_chlg) ? c->migr_peer :
 #endif
                                   c->peer;
+
+#ifndef NO_ECN
+    // track the flags manually, since warpcore sets them on the xv and it'd
+    // require another loop to copy them over
+    v->flags |= likely(c->sockopt.enable_ecn) ? ECN_ECT0 : ECN_NOT;
+#endif
 
 #ifndef NDEBUG
     // sanity check
@@ -555,15 +529,6 @@ bool enc_pkt(struct q_stream * const s,
         return false;
     }
 #endif
-
-    if (unlikely(m->hdr.type == LH_RTRY)) {
-        uint8_t rit[RIT_LEN];
-        make_rit(c, m->hdr.flags, &m->hdr.dcid, &m->hdr.scid, c->tok,
-                 c->tok_len, rit);
-        encb(&pos, end, rit, RIT_LEN);
-        log_pkt("TX", v, &v->saddr, c->tok, c->tok_len, rit);
-        goto tx;
-    }
 
     log_pkt("TX", v, &v->saddr, c->tok, c->tok_len, 0);
 
@@ -583,31 +548,28 @@ bool enc_pkt(struct q_stream * const s,
     if (unlikely(c->state == conn_clsg))
         enc_close_frame(ci, &pos, end, m);
     else if (epoch == ep_data || (!is_clnt(c) && epoch == ep_0rtt))
-        // TODO calc stream hdr len and subtract
         enc_other_frames(ci, &pos, end, m);
 
-    if (unlikely(rtx)) {
-        // this is a RTX, pad out until beginning of stream header
+    if (enc_data || rtx) {
+        // pad out until beginning of stream header
         enc_padding_frame(ci, &pos, end, m,
                           m->strm_frm_pos - (uint16_t)(pos - v->buf));
-        pos = v->buf + m->strm_data_pos + m->strm_data_len;
-        log_stream_or_crypto_frame(
-            true, m, v->buf[m->strm_frm_pos], s->id, false,
-            m->strm_off + m->strm_data_len < s->out_data ? sdt_ooo : sdt_seq);
-
-    } else if (likely(enc_data)) {
-        // this is a fresh data/crypto or pure stream FIN packet, so pad out any
-        // remaining space before stream header
-        enc_padding_frame(ci, &pos, end, m, (uint16_t)(end - pos));
-        enc_stream_or_crypto_frame(&pos, v->buf + v->len, m, v, s);
+        if (unlikely(rtx)) {
+            pos = v->buf + m->strm_data_pos + m->strm_data_len;
+            log_stream_or_crypto_frame(
+                true, m, v->buf[m->strm_frm_pos], s->id, false,
+                m->strm_off + m->strm_data_len < s->out_data ? sdt_ooo
+                                                             : sdt_seq);
+        } else
+            enc_stream_or_crypto_frame(&pos, v->buf + v->len, m, v, s);
     }
 
-    // TODO: include more frames when c->rec.max_pkt_size < max_pkt_len TP
-    if (unlikely((pos - v->buf) < c->rec.max_pkt_size - AEAD_LEN &&
+    // TODO: include more frames when c->rec.max_ups < max_ups TP
+    if (unlikely((pos - v->buf) < c->rec.max_ups - AEAD_LEN &&
                  (enc_data || rtx) &&
                  (epoch == ep_data || (!is_clnt(c) && epoch == ep_0rtt))))
         // we can try to stick some more frames in after the stream frame
-        enc_other_frames(ci, &pos, v->buf + c->rec.max_pkt_size - AEAD_LEN, m);
+        enc_other_frames(ci, &pos, v->buf + c->rec.max_ups - AEAD_LEN, m);
 
     if (is_clnt(c) && enc_data) {
         if (unlikely(c->try_0rtt == false && m->hdr.type == LH_INIT)) {
@@ -658,26 +620,20 @@ tx:;
 
     // alloc directly from warpcore for crypto TX - no need for metadata alloc
     struct w_iov * const xv = w_alloc_iov(c->w, q_conn_af(c), 0, 0);
-    ensure(xv, "w_alloc_iov failed");
+    if (unlikely(xv == 0)) {
+        warn(WRN, "could not alloc iov");
+        return false;
+    }
 
-    if (unlikely(m->hdr.type == LH_RTRY)) {
-        memcpy(xv->buf, v->buf, v->len); // copy data
-        xv->len = v->len;
-    } else {
-        const uint16_t ret =
-            enc_aead(v, m, xv, (uint16_t)(pkt_nr_pos - v->buf));
-        if (unlikely(ret == 0)) {
-            adj_iov_to_start(v, m);
-            return false;
-        }
+    const uint16_t ret = enc_aead(v, m, xv, (uint16_t)(pkt_nr_pos - v->buf));
+    if (unlikely(ret == 0)) {
+        adj_iov_to_start(v, m);
+        return false;
     }
 
     if (!is_clnt(c))
         xv->saddr = v->saddr;
-
-    // track the flags manually, since warpcore sets them on the xv and it'd
-    // require another loop to copy them over
-    xv->flags = v->flags |= likely(c->sockopt.enable_ecn) ? IPTOS_ECN_ECT0 : 0;
+    xv->flags = v->flags;
 
     // encode the pn space id and pkt nr to identify PMTUD pkts;
     // this only works for packets numbered below 0x3fff, but that is plenty
@@ -790,8 +746,8 @@ bool dec_pkt_hdr_beginning(struct w_iov * const xv,
         dec4_chk(&m->hdr.vers, &pos, end);
         dec1_chk(&m->hdr.dcid.len, &pos, end);
 
-        if (unlikely(m->hdr.vers && m->hdr.dcid.len > CID_LEN_MAX)) {
-            warn(DBG, "illegal dcid len %u", m->hdr.dcid.len);
+        if (unlikely(m->hdr.dcid.len > CID_LEN_MAX)) {
+            warn(DBG, "illegal v1 dcid len %u", m->hdr.dcid.len);
             m->hdr.dcid.len = 0;
             return false;
         }
@@ -800,8 +756,8 @@ bool dec_pkt_hdr_beginning(struct w_iov * const xv,
             decb_chk(m->hdr.dcid.id, &pos, end, m->hdr.dcid.len);
 
         dec1_chk(&m->hdr.scid.len, &pos, end);
-        if (unlikely(m->hdr.vers && m->hdr.scid.len > CID_LEN_MAX)) {
-            warn(DBG, "illegal scid len %u", m->hdr.scid.len);
+        if (unlikely(m->hdr.scid.len > CID_LEN_MAX)) {
+            warn(DBG, "illegal v1 scid len %u", m->hdr.scid.len);
             m->hdr.dcid.len = 0;
             return false;
         }
@@ -1084,8 +1040,7 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
     const uint8_t rsvd_bits =
         m->hdr.flags & (is_lh(m->hdr.flags) ? LH_RSVD_MASK : SH_RSVD_MASK);
     if (unlikely(rsvd_bits)) {
-        err_close(c, ERR_PROTOCOL_VIOLATION, 0,
-                  "reserved %s bits are 0x%02x (= non-zero)",
+        err_close(c, ERR_PV, 0, "reserved %s bits are 0x%02x (= non-zero)",
                   is_lh(m->hdr.flags) ? "LH" : "SH", rsvd_bits);
         return false;
     }
@@ -1117,9 +1072,12 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
         goto check_srt;
 
     // check if we need to send an immediate ACK
-    if ((unlikely(diet_empty(&m->pn->recv_all) == false &&
-                  m->hdr.nr < diet_max(&m->pn->recv_all)) ||
-         (xv->flags & IPTOS_ECN_MASK) == IPTOS_ECN_CE))
+    if (unlikely(diet_empty(&m->pn->recv_all) == false &&
+                 m->hdr.nr < diet_max(&m->pn->recv_all))
+#ifndef NO_ECN
+        || is_set(ECN_CE, xv->flags)
+#endif
+    )
         // XXX: this also sends an imm_ack if the reor is "fixed" within a burst
         m->pn->imm_ack = true;
 

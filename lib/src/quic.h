@@ -62,7 +62,7 @@
 struct q_conn; // IWYU pragma: no_forward_declare q_conn
 
 
-// #define DEBUG_EXTRA   ///< Set to log various extra details.
+// #define DEBUG_EXTRA ///< Set to log various extra details.
 // #define DEBUG_STREAMS ///< Set to log stream scheduling details.
 // #define DEBUG_TIMERS  ///< Set to log timer details.
 // #define DEBUG_PROT    ///< Set to log packet protection/encryption details.
@@ -87,12 +87,11 @@ struct q_conn; // IWYU pragma: no_forward_declare q_conn
 
 /// Default limit on the initial amount of outstanding data in flight, in bytes.
 /// Taken from [RFC6928]. The RECOMMENDED value is the minimum of 10 *
-/// max_pkt_size and max(2* max_pkt_size, 14720)).
-#define kInitialWindow(max_pkt_size)                                           \
-    MIN(10 * (max_pkt_size), MAX(2 * (max_pkt_size), 14720))
+/// max_ups and max(2* max_ups, 14720)).
+#define kInitialWindow(max_ups) MIN(10 * (max_ups), MAX(2 * (max_ups), 14720))
 
 /// Minimum congestion window in bytes.
-#define kMinimumWindow(max_pkt_size) (2 * (max_pkt_size))
+#define kMinimumWindow(max_ups) (2 * (max_ups))
 
 /// Reduction in congestion window when a new loss event is detected.
 #define kLossReductionDivisor 2 // kLossReductionFactor

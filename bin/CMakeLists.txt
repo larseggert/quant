@@ -1,5 +1,3 @@
-find_package (Threads)
-
 set_property(DIRECTORY . APPEND PROPERTY COMPILE_DEFINITIONS ${DEFINES})
 
 # see https://cmake.org/Wiki/CMake_RPATH_handling#Always_full_RPATH
@@ -28,6 +26,12 @@ if(HAVE_NETMAP_H)
   set(TARGETS ${TARGETS} client-warp server-warp)
 endif()
 
+if(NOT WITH_MINICRYPTO)
+  set(CRYPTOLIBS picotls-openssl ${OPENSSL_LIBRARIES})
+else()
+  set(CRYPTOLIBS picotls-minicrypto)
+endif()
+
 foreach(TARGET ${TARGETS})
   if(${TARGET} MATCHES ".*-warp")
     string(REGEX REPLACE "-warp$" "" SOURCE ${TARGET})
@@ -36,10 +40,7 @@ foreach(TARGET ${TARGETS})
       lib${PROJECT_NAME}-warp
       ${HTTP_PARSER_LIB}
       picohttp-core
-      picoquic-core
-      ${CMAKE_THREAD_LIBS_INIT}
-      picotls-minicrypto
-      picotls-openssl
+      ${CRYPTOLIBS}
     )
   else()
     add_executable(${TARGET} ${TARGET}.c)
@@ -47,10 +48,7 @@ foreach(TARGET ${TARGETS})
       lib${PROJECT_NAME}
       ${HTTP_PARSER_LIB}
       picohttp-core
-      picoquic-core
-      ${CMAKE_THREAD_LIBS_INIT}
-      picotls-minicrypto
-      picotls-openssl
+      ${CRYPTOLIBS}
     )
     if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang" AND
        CMAKE_C_COMPILER_VERSION VERSION_GREATER 9)
