@@ -54,9 +54,6 @@
 #include "tls.h"
 
 
-#define MAX_PKT_NR_LEN 4 ///< Maximum packet number length allowed by spec.
-
-
 #ifndef NDEBUG
 
 void log_pkt(const char * const dir,
@@ -105,11 +102,11 @@ void log_pkt(const char * const dir,
                 twarn(NTE,
                       BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32
-                              " dcid=%s scid=%s tok=%s len=%u nr=" BLU
+                              " dcid=%s scid=%s%s%s len=%u nr=" BLU
                               "%" PRIu NRM,
                       lbr, ip, rbr, port, v->len, ecn, ecn_str[ecn_mark],
                       m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str,
-                      tok_str, m->hdr.len, m->hdr.nr);
+                      tok_len ? " tok=" : "", tok_str, m->hdr.len, m->hdr.nr);
             else
                 twarn(NTE,
                       BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
@@ -147,10 +144,11 @@ void log_pkt(const char * const dir,
                 twarn(NTE,
                       BLD GRN "TX" NRM " to=%s%s%s:%u 0x%02x=" GRN "%s " NRM
                               "vers=0x%0" PRIx32
-                              " dcid=%s scid=%s tok=%s len=%u nr=" GRN
+                              " dcid=%s scid=%s%s%s len=%u nr=" GRN
                               "%" PRIu NRM,
                       lbr, ip, rbr, port, m->hdr.flags, pts, m->hdr.vers,
-                      dcid_str, scid_str, tok_str, m->hdr.len, m->hdr.nr);
+                      dcid_str, scid_str, tok_len ? " tok=" : "", tok_str,
+                      m->hdr.len, m->hdr.nr);
             else
                 twarn(NTE,
                       BLD GRN "TX" NRM " to=%s%s%s:%u 0x%02x=" GRN "%s " NRM
@@ -321,8 +319,10 @@ static bool __attribute__((nonnull)) can_enc(uint8_t ** const pos,
                                              const uint8_t type,
                                              const bool one_per_pkt)
 {
-    const bool has_space = *pos + max_frame_len(type) <= end;
-    return (one_per_pkt && has_frm(m->frms, type)) == false && has_space;
+    assure(max_frame_len[type] != UINT8_MAX, "unhandled type 0x%02x", type);
+    const bool has_space = *pos + max_frame_len[type] <= end;
+    return (one_per_pkt && unlikely(has_frm(m->frms, type))) == false &&
+           has_space;
 }
 
 
@@ -345,21 +345,22 @@ enc_other_frames(
     struct q_conn * const c = m->pn->c;
 
     // encode connection control frames
-    if (c->tx_hshk_done)
+    if (unlikely(c->tx_hshk_done) && can_enc(pos, end, m, FRM_HSD, true))
         enc_hshk_done_frame(ci, pos, end, m);
 
-    if (!is_clnt(c) && c->tok_len && can_enc(pos, end, m, FRM_TOK, true)) {
+    if (!is_clnt(c) && unlikely(c->tok_len) &&
+        can_enc(pos, end, m, FRM_TOK, true)) {
         enc_new_token_frame(ci, pos, end, m);
         c->tok_len = 0;
     }
 
 #ifndef NO_MIGRATION
-    if (c->tx_path_resp && can_enc(pos, end, m, FRM_PRP, true)) {
+    if (unlikely(c->tx_path_resp) && can_enc(pos, end, m, FRM_PRP, true)) {
         enc_path_response_frame(ci, pos, end, m);
         c->tx_path_resp = false;
     }
 
-    if (c->tx_retire_cid && can_enc(pos, end, m, FRM_RTR, true)) {
+    if (unlikely(c->tx_retire_cid) && can_enc(pos, end, m, FRM_RTR, true)) {
         struct cid * id = 0;
         struct cid * tmp = 0;
         sl_foreach_safe (id, &c->dcids.ret, next, tmp)
@@ -367,43 +368,53 @@ enc_other_frames(
                 enc_retire_cid_frame(ci, pos, end, m, id->seq);
     }
 
-    if (c->tx_path_chlg && can_enc(pos, end, m, FRM_PCL, true))
+    if (unlikely(c->tx_path_chlg) && can_enc(pos, end, m, FRM_PCL, true))
         enc_path_challenge_frame(ci, pos, end, m);
 
-    while (c->tx_ncid && can_enc(pos, end, m, FRM_CID, false)) {
+    while (unlikely(c->tx_ncid) && can_enc(pos, end, m, FRM_CID, false)) {
         enc_new_cid_frame(ci, pos, end, m);
         c->tx_ncid = need_more_cids(&c->scids, c->tp_peer.act_cid_lim);
     }
 #endif
 
-    if (c->blocked && can_enc(pos, end, m, FRM_CDB, true))
+    if (unlikely(c->blocked) && can_enc(pos, end, m, FRM_CDB, true))
         enc_data_blocked_frame(ci, pos, end, m);
 
-    if (c->tx_max_data && can_enc(pos, end, m, FRM_MCD, true))
+    if (unlikely(c->tx_max_data) && can_enc(pos, end, m, FRM_MCD, true))
         enc_max_data_frame(ci, pos, end, m);
 
-    if (c->sid_blocked_bidi && can_enc(pos, end, m, FRM_SBB, true))
+    if (unlikely(c->sid_blocked_bidi) && can_enc(pos, end, m, FRM_SBB, true))
         enc_streams_blocked_frame(ci, pos, end, m, true);
 
-    if (c->sid_blocked_uni && can_enc(pos, end, m, FRM_SBU, true))
+    if (unlikely(c->sid_blocked_uni) && can_enc(pos, end, m, FRM_SBU, true))
         enc_streams_blocked_frame(ci, pos, end, m, false);
 
-    if (c->tx_max_sid_bidi && can_enc(pos, end, m, FRM_MSB, true))
+    if (unlikely(c->tx_max_sid_bidi) && can_enc(pos, end, m, FRM_MSB, true))
         enc_max_strms_frame(ci, pos, end, m, true);
 
-    if (c->tx_max_sid_uni && can_enc(pos, end, m, FRM_MSU, true))
+    if (unlikely(c->tx_max_sid_uni) && can_enc(pos, end, m, FRM_MSU, true))
         enc_max_strms_frame(ci, pos, end, m, false);
 
-    while (!sl_empty(&c->need_ctrl)) {
-        // XXX this assumes we can encode all the ctrl frames
-        struct q_stream * const s = sl_first(&c->need_ctrl);
-        sl_remove_head(&c->need_ctrl, node_ctrl);
-        s->in_ctrl = false;
+    struct q_stream * s;
+    struct q_stream * tmp;
+    sl_foreach_safe (s, &c->need_ctrl, node_ctrl, tmp) {
         // encode stream control frames
-        if (s->blocked && can_enc(pos, end, m, FRM_SDB, true))
+        bool enc_strm_data_blocked = false;
+        if (s->blocked && can_enc(pos, end, m, FRM_SDB, true)) {
             enc_strm_data_blocked_frame(ci, pos, end, m, s);
-        if (s->tx_max_strm_data && can_enc(pos, end, m, FRM_MSD, true))
+            enc_strm_data_blocked = true;
+        }
+        bool enc_max_strm_data = false;
+        if (s->tx_max_strm_data && can_enc(pos, end, m, FRM_MSD, true)) {
             enc_max_strm_data_frame(ci, pos, end, m, s);
+            enc_max_strm_data = true;
+        }
+        if (enc_strm_data_blocked && enc_max_strm_data) {
+            sl_remove(&c->need_ctrl, s, q_stream, node_ctrl);
+            s->in_ctrl = false;
+        } else
+            // the skipped frames need to go out in another packet
+            c->needs_tx = true;
     }
 }
 
@@ -429,7 +440,14 @@ bool enc_pkt(struct q_stream * const s,
 #endif
 
     const epoch_t epoch = unlikely(pmtud) ? ep_hshk : strm_epoch(s);
-    struct pn_space * const pn = m->pn = pn_for_epoch(c, epoch);
+    assure(is_clnt(c) || epoch != ep_0rtt, "serv use of LH_0RTT");
+    struct pn_space * const pn = m->pn = &c->pns[pn_for_epoch[epoch]];
+
+    uint8_t * pos = v->buf;
+    if (enc_data)
+        calc_lens_of_stream_or_crypto_frame(m, v, s, rtx);
+    const uint8_t * const end =
+        v->buf + ((enc_data || rtx) ? m->strm_frm_pos : v->len);
 
     if (unlikely(pn->lg_sent == UINT_T_MAX))
         // next pkt nr
@@ -437,41 +455,27 @@ bool enc_pkt(struct q_stream * const s,
     else
         m->hdr.nr = ++pn->lg_sent;
 
-    switch (epoch) {
-    case ep_init:
-        m->hdr.type = LH_INIT;
-        m->hdr.flags = LH | m->hdr.type;
-        break;
-    case ep_0rtt:
-        if (is_clnt(c)) {
-            m->hdr.type = LH_0RTT;
-            m->hdr.flags = LH | m->hdr.type;
-        } else
-            m->hdr.type = m->hdr.flags = SH;
-        break;
-    case ep_hshk:
-        m->hdr.type = LH_HSHK;
-        m->hdr.flags = LH | m->hdr.type;
-        break;
-    case ep_data:
-        m->hdr.type = m->hdr.flags = SH;
-        m->hdr.flags |= pn->data.out_kyph ? SH_KYPH : 0;
-        if (c->spin_enabled && c->spin)
-            m->hdr.flags |= SH_SPIN;
-        break;
-    }
+    static const uint8_t ep_type[] = {[ep_init] = LH_INIT,
+                                      [ep_0rtt] = LH_0RTT,
+                                      [ep_hshk] = LH_HSHK,
+                                      [ep_data] = SH};
+    m->hdr.type = ep_type[epoch];
 
     const uint8_t pnl = needed_pkt_nr_len(pn->lg_acked, m->hdr.nr);
-    m->hdr.flags |= (pnl - 1);
+    m->hdr.flags = (pnl - 1);
 
-    uint8_t * pos = v->buf;
-    if (enc_data)
-        calc_lens_of_stream_or_crypto_frame(m, v, s, rtx);
-    const uint8_t * const end =
-        v->buf + ((enc_data || rtx) ? m->strm_frm_pos : v->len);
+    if (likely(epoch == ep_data))
+        m->hdr.flags |= SH | (pn->data.out_kyph ? SH_KYPH : 0) |
+                        ((c->spin_enabled && c->spin) ? SH_SPIN : 0);
+    else
+        m->hdr.flags |= LH | m->hdr.type;
+
     enc1(&pos, end, m->hdr.flags);
 
-    if (unlikely(is_lh(m->hdr.flags))) {
+    if (likely(epoch == ep_data)) {
+        cid_cpy(&m->hdr.dcid, c->dcid);
+        encb(&pos, end, m->hdr.dcid.id, m->hdr.dcid.len);
+    } else {
         m->hdr.vers = c->vers;
         enc4(&pos, end, m->hdr.vers);
         enc_lh_cids(&pos, end, m, c->dcid, c->scid);
@@ -484,14 +488,9 @@ bool enc_pkt(struct q_stream * const s,
 
         len_pos = pos;
         pos += 2;
-
-    } else {
-        cid_cpy(&m->hdr.dcid, c->dcid);
-        encb(&pos, end, m->hdr.dcid.id, m->hdr.dcid.len);
     }
 
-    uint8_t * pkt_nr_pos = 0;
-    pkt_nr_pos = pos;
+    const uint8_t * const pkt_nr_pos = pos;
     switch ((pnl - 1) & HEAD_PNRL_MASK) {
     case 0:
         enc1(&pos, end, m->hdr.nr & UINT64_C(0xff));
@@ -517,7 +516,8 @@ bool enc_pkt(struct q_stream * const s,
 #ifndef NO_ECN
     // track the flags manually, since warpcore sets them on the xv and it'd
     // require another loop to copy them over
-    v->flags |= likely(c->sockopt.enable_ecn) ? ECN_ECT0 : ECN_NOT;
+    if (likely(c->sockopt.enable_ecn))
+        v->flags |= ECN_ECT0;
 #endif
 
 #ifndef NDEBUG
@@ -850,27 +850,34 @@ bool xor_hp(struct w_iov * const xv,
             const struct pkt_meta * const m,
             const struct cipher_ctx * const ctx,
             const uint16_t pkt_nr_pos,
-            const bool is_enc)
+            const uint8_t * const enc_mask)
 {
-    const uint16_t off = pkt_nr_pos + MAX_PKT_NR_LEN;
-    const uint16_t len =
-        is_lh(m->hdr.flags) ? pkt_nr_pos + m->hdr.len : xv->len;
-    if (unlikely(off + AEAD_LEN > len))
-        return false;
+    uint8_t dec_mask[MAX_PKT_NR_LEN + 1] = {0};
+    const uint8_t * mask;
 
-    ptls_cipher_init(ctx->header_protection, &xv->buf[off]);
-    uint8_t mask[MAX_PKT_NR_LEN + 1] = {0};
-    ptls_cipher_encrypt(ctx->header_protection, mask, mask, sizeof(mask));
+    if (enc_mask == 0) {
+        const uint16_t off = pkt_nr_pos + MAX_PKT_NR_LEN;
+        const uint16_t len =
+            is_lh(m->hdr.flags) ? pkt_nr_pos + m->hdr.len : xv->len;
+        if (unlikely(off + AEAD_LEN > len))
+            return false;
+
+        ptls_cipher_init(ctx->header_protection, &xv->buf[off]);
+        ptls_cipher_encrypt(ctx->header_protection, dec_mask, dec_mask,
+                            sizeof(dec_mask));
+        mask = dec_mask;
+    } else
+        mask = enc_mask;
 
     const uint8_t orig_flags = xv->buf[0];
     xv->buf[0] ^= mask[0] & (unlikely(is_lh(m->hdr.flags)) ? 0x0f : 0x1f);
-    const uint8_t pnl = pkt_nr_len(is_enc ? orig_flags : xv->buf[0]);
+    const uint8_t pnl = pkt_nr_len(enc_mask ? orig_flags : xv->buf[0]);
     for (uint8_t i = 0; i < pnl; i++)
         xv->buf[pkt_nr_pos + i] ^= mask[1 + i];
 
 #ifdef DEBUG_PROT
-    warn(DBG, "%s HP over [0, %u..%u] w/sample off %u",
-         is_enc ? "apply" : "undo", pkt_nr_pos, pkt_nr_pos + pnl - 1, off);
+    warn(DBG, "%s HP over [0, %u..%u]", enc_mask ? "apply" : "undo", pkt_nr_pos,
+         pkt_nr_pos + pnl - 1);
 #endif
 
     return true;
@@ -888,7 +895,6 @@ static bool undo_hp(struct w_iov * const xv,
     m->hdr.flags = xv->buf[0];
     m->hdr.type = pkt_type(xv->buf[0]);
     const uint8_t pnl = pkt_nr_len(xv->buf[0]);
-    struct pn_space * const pn = pn_for_pkt_type(m->pn->c, m->hdr.type);
     const uint8_t * pnp = xv->buf + m->hdr.hdr_len;
 
     switch (xv->buf[0] & HEAD_PNRL_MASK) {
@@ -914,7 +920,7 @@ static bool undo_hp(struct w_iov * const xv,
     }
     m->hdr.hdr_len += pnl;
 
-    const uint64_t expected_pn = diet_max(&pn->recv) + 1;
+    const uint64_t expected_pn = diet_max(&m->pn->recv) + 1;
     const uint64_t pn_win = UINT64_C(1) << (pnl * 8);
     const uint64_t pn_hwin = pn_win / 2;
     const uint64_t pn_mask = pn_win - 1;
@@ -935,21 +941,25 @@ which_cipher_ctx_in(struct q_conn * const c,
                     struct pkt_meta * const m,
                     const bool kyph)
 {
-    switch (m->hdr.type) {
-    case LH_INIT:
-    case LH_RTRY:
-        m->pn = &c->pns[pn_init];
-        return &m->pn->early.in;
-    case LH_0RTT:
-        m->pn = &c->pns[pn_data];
-        return &m->pn->data.in_0rtt;
-    case LH_HSHK:
-        m->pn = &c->pns[pn_hshk];
-        return &m->pn->early.in;
-    default:
+    // common case
+    if (likely(m->hdr.type == SH)) {
         m->pn = &c->pns[pn_data];
         return &m->pn->data.in_1rtt[kyph ? is_set(SH_KYPH, m->hdr.flags) : 0];
     }
+
+    if (m->hdr.type == LH_INIT || LH_INIT == LH_RTRY) {
+        m->pn = &c->pns[pn_init];
+        return &m->pn->early.in;
+    }
+
+    if (m->hdr.type == LH_HSHK) {
+        m->pn = &c->pns[pn_hshk];
+        return &m->pn->early.in;
+    }
+
+    // LH_0RTT
+    m->pn = &c->pns[pn_data];
+    return &m->pn->data.in_0rtt;
 }
 
 
@@ -1067,8 +1077,7 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
     }
 
     // packet protection verified OK
-    if (unlikely(
-            diet_find(&pn_for_pkt_type(c, m->hdr.type)->recv_all, m->hdr.nr)))
+    if (unlikely(diet_find(&m->pn->recv_all, m->hdr.nr)))
         goto check_srt;
 
     // check if we need to send an immediate ACK

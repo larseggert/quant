@@ -1,4 +1,5 @@
 FROM martenseemann/quic-network-simulator-endpoint as qns
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -y && apt-get install -y \
         cmake \
         g++ \
@@ -14,6 +15,7 @@ RUN cmake ..
 RUN make install
 
 FROM martenseemann/quic-network-simulator-endpoint
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -y && apt-get install -y \
         binutils \
         libasan5 \

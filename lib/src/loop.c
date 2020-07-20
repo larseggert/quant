@@ -69,7 +69,7 @@ void __attribute__((nonnull(1))) loop_run(struct w_engine * const w,
                                           struct q_conn * const c,
                                           struct q_stream * const s)
 {
-    ensure(api_func == 0, "other API call active");
+    assure(api_func == 0, "other API call active");
     api_func = f;
     api_conn = c;
     api_strm = s;

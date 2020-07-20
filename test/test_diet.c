@@ -29,6 +29,7 @@
 
 #include "bitset.h"
 #include "diet.h"
+#include "tree.h"
 
 
 static void trace(struct diet * const d,

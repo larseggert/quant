@@ -153,5 +153,6 @@ cid_cpy(struct cid * const dst, const struct cid * const src)
     // cppcheck-suppress nullPointerArithmeticRedundantCheck
     memcpy((uint8_t *)dst + offsetof(struct cid, seq),
            (const uint8_t *)src + offsetof(struct cid, seq),
-           sizeof(struct cid) - offsetof(struct cid, seq));
+           sizeof(struct cid) - offsetof(struct cid, seq) -
+               sizeof(src->_unused));
 }

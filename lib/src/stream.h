@@ -36,6 +36,10 @@
 #include "quic.h"
 #include "tls.h"
 
+#ifndef NO_OOO_DATA
+#include "tree.h"
+#endif
+
 #ifdef DEBUG_STREAMS
 #include "cid.h"
 #endif
@@ -152,36 +156,18 @@ out_fully_acked(const struct q_stream * const s)
 }
 
 
-static inline dint_t __attribute__((const)) crpt_strm_id(const epoch_t epoch)
-{
-    switch (epoch) { // lgtm [cpp/missing-return]
-    case ep_init:
-        return -4;
-    case ep_hshk:
-        return -2;
-    case ep_data:
-        return -1;
-    case ep_0rtt:
-    default:
-        die("unhandled epoch %u", epoch);
-    }
-}
+static const dint_t crpt_strm_id[] =
+    {[ep_init] = -4, [ep_hshk] = -2, [ep_data] = -1};
 
 
 static inline epoch_t __attribute__((nonnull))
 strm_epoch(const struct q_stream * const s)
 {
-    if (unlikely(s->id < 0))
-        switch (s->id) {
-        case -4:
-            return ep_init;
-        case -2:
-            return ep_hshk;
-        case -1:
-            return ep_data;
-        default:
-            die("illegal sid %" PRId, s->id);
-        }
+    if (unlikely(s->id < 0)) {
+        static const epoch_t id_ep[] = {
+            [4] = ep_init, [2] = ep_hshk, [1] = ep_data};
+        return id_ep[-s->id];
+    }
 
     if (unlikely(is_clnt(s->c) == true && s->c->state == conn_opng))
         return ep_0rtt;

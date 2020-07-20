@@ -34,12 +34,13 @@ declare -A servers=(
     [akamai]="ietf.akaquic.com|-3|443|443|443|/100k"
     [apple]="[2a00:79e1:abc:301:18c7:dac8:b9c6:f91f]|-3|4433|4433|4433|/40000"
     [ats]="quic.ogre.com||4433|4434|4433|/en/latest/_static/jquery.js"
-    [f5]="f5quic.com|-3|4433|4433|4433|/50000"
+    [f5]="f5quic.com|-3|4433|4434|4433|/50000"
     [google]="quic.rocks|-3|4433|4434|4433|/40000"
-    [haskell]="mew.org||4434|4434|4434|/40000"
+    [haskell]="mew.org|-3|4433|4434|4433|/num/40000"
     [lsquic]="http3-test.litespeedtech.com|-3|4433|4434|4433|/40000"
     [msquic]="quic.westus.cloudapp.azure.com||4433|4434|443|/draft-ietf-quic-http-11.txt"
     [mvfst]="fb.mvfst.net|-3|443|4434|443|/40000"
+    [nginx]="quic.nginx.org|-3|443|443|443|/static/fonts/RobotoRegular.woff"
     [ngtcp2]="nghttp2.org|-3|4433|4434|4433|/40000"
     [ngx_quic]="cloudflare-quic.com|-3|443|443|443|/index.html"
     [pandora]="pandora.cm.in.tum.de||4433|4434|4433|/index.html"
@@ -115,7 +116,10 @@ function prep {
 
     local ret_base="$1.ret"
     >&2 echo -n "($ret in $log) "
-    echo $ret > "$ret_base.fail"
+    if [ ! -e "$ret_base.fail" ] || [ "$(cat "$ret_base.fail")" = "x" ]; then
+        echo $ret > "$ret_base.fail"
+    fi
+    echo "$log"
     rm -f "$log_strip"
 }
 
@@ -301,10 +305,15 @@ function analyze {
         [ $? -eq 1 ] && echo P > "$base.ret.spin"
 
         # analyze ECN
-        perl -n -e '/ECN verification failed/ and $n=-1;
-            $n >= 0 and /dec_ack_frame.*ECN ect0=/ and $n=1;
+        perl -n -e '$n == 1 and /ECN verification failed/ and $n=2;
+            $n == 0 and /dec_ack_frame.*ECN ect0=/ and $n=1;
             END{exit $n};' "$log.strip"
-        [ $? -eq 1 ] && echo E > "$base.ret.aecn"
+        local r=$?
+        if [ $r -eq 2 ]; then
+            echo e > "$base.ret.aecn"
+        elif [ $r -eq 1 ]; then
+            echo E > "$base.ret.aecn"
+        fi
 
         [ ! -e "$base.ret.fail" ] && [ -s "$base.ret.hshk" ] && \
             [ -s "$base.ret.data" ] && [ -s "$base.ret.clse" ] && rm -f "$log"

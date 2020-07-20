@@ -32,17 +32,13 @@
 
 #include <picotls.h>
 
-struct cid;             // IWYU pragma: no_forward_declare cid
-struct per_engine_data; // IWYU pragma: no_forward_declare per_engine_data
-struct pkt_meta;        // IWYU pragma: no_forward_declare pkt_meta
-struct q_conf;          // IWYU pragma: no_forward_declare q_conf
-struct q_conn;          // IWYU pragma: no_forward_declare q_conn
-struct q_stream;        // IWYU pragma: no_forward_declare q_stream
-struct w_iov;           // IWYU pragma: no_forward_declare w_iov
-
-// IWYU pragma: no_include <quant/quant.h>
-// IWYU pragma: no_include "quic.h"
-// IWYU pragma: no_include "cid.h"
+struct cid;
+struct per_engine_data;
+struct pkt_meta;
+struct q_conf;
+struct q_conn;
+struct q_stream;
+struct w_iov;
 
 
 #ifdef FUZZING

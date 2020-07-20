@@ -50,6 +50,7 @@
 #include "recovery.h"
 #include "stream.h"
 #include "tls.h"
+#include "tree.h"
 
 
 static inline bool __attribute__((nonnull))
@@ -60,19 +61,11 @@ in_cong_recovery(const struct q_conn * const c, const uint64_t sent_t)
 }
 
 
-static bool __attribute__((nonnull))
-have_keys(struct q_conn * const c, const pn_t t)
+static bool __attribute__((nonnull)) have_1rtt_keys(struct q_conn * const c)
 {
-    const struct pn_space * const pn = &c->pns[t];
-    switch (t) {
-    case pn_init:
-    case pn_hshk:
-        return pn->early.in.aead && pn->early.out.aead;
-    case pn_data:
-        return (pn->data.in_1rtt[0].aead && pn->data.out_1rtt[0].aead) ||
-               (pn->data.in_1rtt[1].aead && pn->data.out_1rtt[1].aead);
-    }
-    die("unhandled pn %s", pn_type_str(t));
+    const struct pn_space * const pn = &c->pns[pn_data];
+    return (pn->data.in_1rtt[0].aead && pn->data.out_1rtt[0].aead) ||
+           (pn->data.in_1rtt[1].aead && pn->data.out_1rtt[1].aead);
 }
 
 
@@ -186,7 +179,7 @@ void set_ld_timer(struct q_conn * const c)
 
     timeout_t to =
         unlikely(c->rec.cur.srtt == 0)
-            ? (2 * kInitialRtt)
+            ? (2 * c->rec.initial_rtt) * NS_PER_US
             : ((c->rec.cur.srtt + MAX(4 * c->rec.cur.rttvar, kGranularity)) *
                    NS_PER_US +
                c->tp_peer.max_ack_del * NS_PER_MS);
@@ -269,8 +262,11 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
     struct pn_space * const pn = m->pn;
     struct q_conn * const c = pn->c;
 
-    if (m->in_flight)
+    if (m->in_flight) {
         remove_from_in_flight(m);
+        if (m->ack_eliciting)
+            pn->pkts_lost_since_last_ack_tx++;
+    }
 
     // rest of function is not from pseudo code
 
@@ -298,11 +294,14 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
         1 << FRM_MSD | 1 << FRM_MSB | 1 << FRM_MSU | 1 << FRM_CDB |
         1 << FRM_SDB | 1 << FRM_SBB | 1 << FRM_SBU | 1 << FRM_CID |
         1 << FRM_RTR | 1 << FRM_HSD);
-    if (bit_overlap(FRM_MAX, &all_ctrl, &m->frms))
-        for (uint8_t i = 0; i < FRM_MAX; i++)
-            if (has_frm(m->frms, i) && bit_isset(FRM_MAX, i, &all_ctrl)) {
+    struct frames lost = bitset_t_initializer(0);
+    bit_and2(FRM_MAX, &lost, &all_ctrl, &m->frms);
+    uint8_t i = (uint8_t)bit_ffs(FRM_MAX, &lost);
+    if (i)
+        for (i = i - 1; i < FRM_MAX; i++)
+            if (bit_isset(FRM_MAX, i, &lost)) {
 #ifdef DEBUG_EXTRA
-                warn(DBG, "%s pkt %" PRIu " ctrl frame: 0x%02x",
+                warn(DBG, "%s pkt %" PRIu " lost ctrl frame: 0x%02x",
                      pkt_type_str(m->hdr.flags, &m->hdr.vers), m->hdr.nr, i);
 #endif
                 switch (i) {
@@ -330,42 +329,34 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
                     c->tx_retire_cid = true;
                     break;
 #endif
+                case FRM_MCD:
+                    c->tx_max_data = true;
+                    break;
                 case FRM_MSD:;
                     struct q_stream * const s =
                         get_stream(c, m->max_strm_data_sid);
-                    if (s)
+                    if (s) {
                         s->tx_max_strm_data = true;
+                        need_ctrl_update(s);
+                    }
                     break;
+                    // NOTE: we never send FRM_RST or FRM_STP, they would need
+                    // to be handled like FRM_MSD, with a new meta field
                 default:
                     die("unhandled RTX of 0x%02x frame", i);
                 }
+                c->needs_tx = true;
             }
-
-    static const struct frames strm_ctrl =
-        // FRM_SDB is automatically RTX'ed XXX fix this mess
-        bitset_t_initializer(1 << FRM_RST | 1 << FRM_STP /*| 1 << FRM_SDB*/);
-    if (bit_overlap(FRM_MAX, &strm_ctrl, &m->frms))
-        need_ctrl_update(m->strm);
 
     m->lost = true;
     if (m->strm && !m->has_rtx) {
         m->strm->lost_cnt++;
-#ifndef NDEBUG
-        ensure(m->strm->lost_cnt <= w_iov_sq_cnt(&m->strm->out),
+        assure(m->strm->lost_cnt <= w_iov_sq_cnt(&m->strm->out),
                "strm " FMT_SID " cnt %" PRIu " < lost %" PRIu, m->strm->id,
                w_iov_sq_cnt(&m->strm->out), m->strm->lost_cnt);
-#endif
     }
 }
 
-
-#ifndef NDEBUG
-#define DEBUG_diet_insert diet_insert
-#define DEBUG_ensure ensure
-#else
-#define DEBUG_diet_insert(...)
-#define DEBUG_ensure(...)
-#endif
 
 #ifndef NO_QINFO
 #define incr_out_lost c->i.pkts_out_lost++
@@ -393,57 +384,56 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
     // Packets sent before this time are deemed lost.
     const uint64_t lost_send_t = w_now() - loss_del;
 
-#ifndef NDEBUG
     struct diet lost = diet_initializer(lost);
-#endif
     uint_t lg_lost = UINT_T_MAX;
     uint64_t lg_lost_tx_t = 0;
     bool in_flight_lost = false;
-    struct pkt_meta * m;
-    kh_foreach_value(&pn->sent_pkts, m, {
-        DEBUG_ensure(m->acked == false,
-                     "%s ACKed %s pkt %" PRIu " in sent_pkts", conn_type(c),
-                     pkt_type_str(m->hdr.flags, &m->hdr.vers), m->hdr.nr);
-        DEBUG_ensure(m->lost == false, "%s lost %s pkt %" PRIu " in sent_pkts",
-                     conn_type(c), pkt_type_str(m->hdr.flags, &m->hdr.vers),
-                     m->hdr.nr);
 
-        if (unlikely(m->hdr.nr > pn->lg_acked))
-            continue;
+    struct ival * i = 0;
+    diet_foreach (i, diet, &pn->sent_pkt_nrs) {
+        if (i->lo > pn->lg_acked)
+            // diet only has higher values
+            break;
 
-        // Mark packet as lost, or set time when it should be marked.
-        if (m->t <= lost_send_t ||
-            pn->lg_acked >= m->hdr.nr + kPacketThreshold) {
-            m->lost = true;
-            in_flight_lost |= m->in_flight;
-            incr_out_lost;
-            if (unlikely(lg_lost == UINT_T_MAX) || m->hdr.nr > lg_lost) {
-                lg_lost = m->hdr.nr;
-                lg_lost_tx_t = m->t;
+        for (uint_t ua = i->lo; ua <= MIN(i->hi, pn->lg_acked - 1); ua++) {
+            struct pkt_meta * m;
+            find_sent_pkt(pn, ua, &m);
+
+            assure(m->acked == false, "%s ACKed %s pkt %" PRIu " in sent_pkts",
+                   conn_type(c), pkt_type_str(m->hdr.flags, &m->hdr.vers),
+                   m->hdr.nr);
+            assure(m->lost == false, "%s lost %s pkt %" PRIu " in sent_pkts",
+                   conn_type(c), pkt_type_str(m->hdr.flags, &m->hdr.vers),
+                   m->hdr.nr);
+
+            // Mark packet as lost, or set time when it should be marked.
+            if (m->t <= lost_send_t ||
+                pn->lg_acked >= m->hdr.nr + kPacketThreshold) {
+                m->lost = true;
+                in_flight_lost |= m->in_flight;
+                incr_out_lost;
+                if (unlikely(lg_lost == UINT_T_MAX) || m->hdr.nr > lg_lost) {
+                    lg_lost = m->hdr.nr;
+                    lg_lost_tx_t = m->t;
+                }
+                diet_insert(&lost, m->hdr.nr, 0);
+            } else {
+                if (unlikely(!pn->loss_t))
+                    pn->loss_t = m->t + loss_del;
+                else
+                    pn->loss_t = MIN(pn->loss_t, m->t + loss_del);
             }
-        } else {
-            if (unlikely(!pn->loss_t))
-                pn->loss_t = m->t + loss_del;
-            else
-                pn->loss_t = MIN(pn->loss_t, m->t + loss_del);
         }
-
-        // OnPacketsLost
-        if (m->lost) {
-            DEBUG_diet_insert(&lost, m->hdr.nr, 0);
-            on_pkt_lost(m, true);
-            if (m->strm == 0 || m->has_rtx)
-                free_iov(w_iov(c->w, pm_idx(c->w, m)), m);
-        }
-    });
+    }
 
 #ifndef NDEBUG
     int pos = 0;
-    struct ival * i = 0;
     unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     const uint32_t tmp_len = ped(c->w)->scratch_len;
     uint8_t * const tmp = ped(c->w)->scratch;
+#endif
     diet_foreach (i, diet, &lost) {
+#ifndef NDEBUG
         if ((size_t)pos >= tmp_len) {
             tmp[tmp_len - 2] = tmp[tmp_len - 3] = tmp[tmp_len - 4] = '.';
             tmp[tmp_len - 1] = 0;
@@ -458,11 +448,21 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
             pos += snprintf((char *)&tmp[pos], tmp_len - (size_t)pos,
                             FMT_PNR_OUT ".." FMT_PNR_OUT "%s", i->lo, i->hi,
                             splay_next(diet, &lost, i) ? ", " : "");
+#endif
+        // OnPacketsLost
+        for (uint_t ua = i->lo; ua <= i->hi; ua++) {
+            struct pkt_meta * m;
+            struct w_iov * const v = find_sent_pkt(pn, ua, &m);
+            on_pkt_lost(m, true);
+            if (m->strm == 0 || m->has_rtx)
+                free_iov(v, m);
+        }
     }
     diet_free(&lost);
 
+#ifndef NDEBUG
     if (pos)
-        warn(DBG, "%s %s lost: %s", conn_type(c), pn_type_str(pn->type), tmp);
+        warn(DBG, "%s %s lost: %s", conn_type(c), pn_type_str[pn->type], tmp);
     poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 #endif
 
@@ -495,7 +495,7 @@ static void __attribute__((nonnull)) on_ld_timeout(struct q_conn * const c)
 
     if (pn->loss_t) {
 #ifdef DEBUG_TIMERS
-        warn(DBG, "%s TT alarm on %s conn %s", pn_type_str(pn->type),
+        warn(DBG, "%s TT alarm on %s conn %s", pn_type_str[pn->type],
              conn_type(c), cid_str(c->scid));
 #endif
         detect_all_lost_pkts(c, true);
@@ -503,7 +503,7 @@ static void __attribute__((nonnull)) on_ld_timeout(struct q_conn * const c)
         return;
     }
 
-    if (have_keys(c, pn_data) == false) {
+    if (have_1rtt_keys(c) == false) {
         // I-D says always 1, but that breaks RTX of Initial+0-RTT
         c->tx_limit = is_clnt(c) && c->try_0rtt ? 2 : 1;
 #ifdef DEBUG_TIMERS
@@ -707,9 +707,7 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
                  conn_type(c), pkt_type_str(m->hdr.flags, &m->hdr.vers),
                  m->hdr.nr, m_rtx->hdr.nr);
 #endif
-#ifndef NDEBUG
-            ensure(sl_next(m_rtx, rtx_next) == 0, "RTX chain corrupt");
-#endif
+            assure(sl_next(m_rtx, rtx_next) == 0, "RTX chain corrupt");
             if (m_rtx->acked == false) {
                 // treat RTX'ed data as ACK'ed; use stand-in w_iov for RTX info
                 const uint_t acked_nr = m->hdr.nr;
@@ -736,7 +734,7 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
 
     m->acked = true;
 
-    if (has_frm(m->frms, FRM_RTR)) {
+    if (unlikely(has_frm(m->frms, FRM_RTR))) {
         struct cid * const id = cid_by_seq(&c->dcids.ret, m->retire_cid_seq);
         // if it doesn't exist, it's been deleted already by previous ACK
         if (id) {
@@ -767,7 +765,7 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
             }
         }
 
-        if (s->id >= 0 && s->out_una == 0) {
+        if (s->id >= 0 && out_fully_acked(s)) {
             if (unlikely(fin_acked || c->did_0rtt)) {
                 // this ACKs a FIN
                 c->have_new_data = true;

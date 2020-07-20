@@ -38,6 +38,7 @@
 
 #include "bitset.h"
 #include "cid.h"
+#include "conn.h"
 #include "frame.h"
 #include "marshall.h"
 #include "pkt.h"

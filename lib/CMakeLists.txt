@@ -1,6 +1,8 @@
 # Get the latest commit hash of the working branch
 execute_process(
-  COMMAND git log -1 --format=%H
+  # COMMAND git rev-parse HEAD
+  # this works in docker:
+  COMMAND cat .git/refs/heads/master
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   OUTPUT_VARIABLE GIT_COMMIT_HASH_STR
   OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -15,7 +17,10 @@ endif()
 
 # Get the latest *abbreviated* commit hash of the working branch
 execute_process(
-  COMMAND git log -1 --format=%h --abbrev=7
+  # COMMAND git log -1 --format=%h --abbrev=7
+  # this works in docker:
+  COMMAND cat .git/refs/heads/master
+  COMMAND cut -c 1-7
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   OUTPUT_VARIABLE GIT_COMMIT_HASH_ABBREV_STR
   OUTPUT_STRIP_TRAILING_WHITESPACE

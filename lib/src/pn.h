@@ -35,9 +35,8 @@
 #include "frame.h"
 #include "tls.h"
 
-struct pkt_meta; // IWYU pragma: no_forward_declare pkt_meta
-struct q_conn;   // IWYU pragma: no_forward_declare q_conn
-// IWYU pragma: no_include "quic.h"
+struct pkt_meta;
+struct q_conn;
 
 
 KHASH_MAP_INIT_INT64(pm_by_nr, struct pkt_meta *)
@@ -64,19 +63,28 @@ struct pn_data {
 typedef enum { pn_init = 0, pn_hshk = 1, pn_data = 2 } pn_t;
 
 
-static inline const char * __attribute__((const)) pn_type_str(const pn_t type)
-{
-    switch (type) { // lgtm [cpp/missing-return]
-    case pn_init:
-        return "Initial";
-    case pn_hshk:
-        return "Handshake";
-    case pn_data:
-        return "Data";
-    default:
-        die("unhandled pn %u", type);
-    }
-}
+// g++ unfortunately cannot deal with "non-trivial designated initializers"
+static const pn_t pn_for_epoch[] = {
+#ifndef __cplusplus
+    [ep_init] =
+#endif
+        pn_init,
+#ifndef __cplusplus
+    [ep_0rtt] =
+#endif
+        pn_data,
+#ifndef __cplusplus
+    [ep_hshk] =
+#endif
+        pn_hshk,
+#ifndef __cplusplus
+    [ep_data] =
+#endif
+        pn_data};
+
+
+static const char * const pn_type_str[] =
+    {[pn_init] = "Initial", [pn_hshk] = "Handshake", [pn_data] = "Data"};
 
 
 struct pn_space {
@@ -89,6 +97,7 @@ struct pn_space {
     struct diet recv_all;      ///< All received packet numbers.
     struct diet acked_or_lost; ///< Sent packet numbers already ACKed (or lost).
 
+    struct diet sent_pkt_nrs;    ///< Packet numbers in sent_packets.
     khash_t(pm_by_nr) sent_pkts; // sent_packets
 
     uint_t lg_sent;            // largest_sent_packet
@@ -96,6 +105,7 @@ struct pn_space {
     uint_t lg_sent_before_rto; // largest_sent_before_rto
 
     uint_t pkts_rxed_since_last_ack_tx;
+    uint_t pkts_lost_since_last_ack_tx;
 
 #ifndef NO_ECN
     uint_t ecn_ref[ECN_MASK + 1];

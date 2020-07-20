@@ -30,9 +30,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/param.h>
+
+#ifndef NO_TLS_LOG
+#include <stdio.h>
+#endif
 
 #include <picotls.h>
 #include <timeout.h>
@@ -52,15 +55,14 @@
 
 #include "cid.h"
 #include "frame.h"
-#include "tree.h" // IWYU pragma: keep
+#include "tree.h"
 
 #ifndef NO_SERVER
 #include "kvec.h"
 #include "tls.h"
 #endif
 
-struct q_conn; // IWYU pragma: no_forward_declare q_conn
-
+struct q_conn;
 
 // #define DEBUG_EXTRA ///< Set to log various extra details.
 // #define DEBUG_STREAMS ///< Set to log stream scheduling details.
@@ -81,9 +83,6 @@ struct q_conn; // IWYU pragma: no_forward_declare q_conn
 // Timer granularity. This is a system-dependent value. However, implementations
 // SHOULD use a value no smaller than 1ms.
 #define kGranularity (1 * US_PER_MS)
-
-// The RTT used before an RTT sample is taken. The RECOMMENDED value is 100ms.
-#define kInitialRtt (500 * NS_PER_MS)
 
 /// Default limit on the initial amount of outstanding data in flight, in bytes.
 /// Taken from [RFC6928]. The RECOMMENDED value is the minimum of 10 *

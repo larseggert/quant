@@ -31,10 +31,9 @@
 
 #include <quant/quant.h>
 
-#include "conn.h"
 #include "stream.h"
 
-struct q_conn; // IWYU pragma: no_forward_declare q_conn
+struct q_conn;
 
 
 void q_chunk_str(struct w_engine * const w,

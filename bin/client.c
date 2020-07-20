@@ -38,7 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
-#include <sys/socket.h> // IWYU pragma: no_forward_declare sockaddr
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -88,6 +88,7 @@ KHASH_MAP_INIT_INT64(conn_cache, struct conn_cache_entry *)
 
 static uint32_t vers = 0;
 static uint32_t timeout = 10;
+static uint32_t initial_rtt = 500;
 static uint32_t num_bufs = 100000;
 static uint32_t reps = 1;
 static bool do_h3 = false;
@@ -173,6 +174,8 @@ usage(const char * const name,
 #endif
     printf("\t[-w]\t\twrite retrieved objects to disk; default %s\n",
            write_files ? "true" : "false");
+    printf("\t[-x rtt]\tinitial RTT in milliseconds (default %u)\n",
+           initial_rtt);
     printf("\t[-z]\t\tuse zero-length source connection IDs; default %s\n",
            zlen_cids ? "true" : "false");
     exit(0);
@@ -444,7 +447,7 @@ int main(int argc, char * argv[])
     }
 
     while ((ch = getopt(argc, argv,
-                        "hi:v:s:t:l:cu36azb:wr:q:me:"
+                        "hi:v:s:t:l:cu36azb:wr:q:me:x:"
 #ifndef NO_MIGRATION
                         "n"
 #endif
@@ -470,6 +473,9 @@ int main(int argc, char * argv[])
             break;
         case 'e':
             vers = (uint32_t)MAX(1, MIN(strtoul(optarg, 0, 16), UINT32_MAX));
+            break;
+        case 'x':
+            initial_rtt = MAX(1, (uint32_t)strtoul(optarg, 0, 10));
             break;
         case 'l':
             strncpy(tls_log, optarg, sizeof(tls_log) - 1);
@@ -522,7 +528,8 @@ int main(int argc, char * argv[])
         ifname,
         &(const struct q_conf){
             .conn_conf =
-                &(struct q_conn_conf){.enable_tls_key_updates = flip_keys,
+                &(struct q_conn_conf){.initial_rtt = initial_rtt,
+                                      .enable_tls_key_updates = flip_keys,
                                       .enable_spinbit = true,
                                       .enable_udp_zero_checksums = true,
                                       .idle_timeout = timeout,

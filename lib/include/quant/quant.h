@@ -46,6 +46,7 @@ struct q_stream;
 struct q_conn_conf {
     uint_t idle_timeout;             // seconds
     uint_t tls_key_update_frequency; // seconds
+    uint_t initial_rtt;              // milliseconds
     uint8_t enable_spinbit : 1;
     uint8_t enable_udp_zero_checksums : 1;
     uint8_t enable_tls_key_updates : 1; // TODO default to on eventually

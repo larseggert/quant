@@ -115,8 +115,7 @@ void warpcore_transaction(const char * const msg, const size_t msg_len)
     v->len = msg_len;
 
     w_tx(s, &o);
-    while (w_tx_pending(&o))
-        w_nic_tx(w);
+    w_nic_tx(w);
     warn(DBG, "pkt tx: %s", v->buf);
 
     struct w_iov_sq i = w_iov_sq_initializer(i);
@@ -167,7 +166,7 @@ void quic_transaction(const char * const req, const size_t req_len)
         DSTACK_LOG("DSTACK 2" DSTACK_LOG_NEWLINE);
         struct q_stream * s = 0;
         static const struct q_conn_conf qcc = {
-            30, 0, 0, 0, 0, 0, 0, 0xff000000 + DRAFT_VERSION};
+            30, 0, 0, 0, 0, 0, 0, 0, 0xff000000 + DRAFT_VERSION};
         struct q_conn * const c =
             q_connect(w, to_in(peer), peername, &o, &s, true,
                       "hq-" DRAFT_VERSION_STRING, &qcc);

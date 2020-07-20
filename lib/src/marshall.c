@@ -40,7 +40,9 @@
 // #define VARINT8_MAX UINT64_C(0x3fffffffffffffff)
 // #define VARINT_MAX VARINT8_MAX
 
+#ifndef NDEBUG
 #define VARINT_MASK UINT64_C(0xc000000000000000)
+#endif
 #define VARINT_MASK8 UINT64_C(0x3fffffffc0000000)
 #define VARINT_MASK4 UINT64_C(0x000000003fffc000)
 #define VARINT_MASK2 UINT64_C(0x0000000000003fc0)
@@ -54,7 +56,7 @@
 ///
 uint8_t varint_size(const uint64_t val)
 {
-    ensure((val & VARINT_MASK) == 0, "value overflow: %" PRIu64, val);
+    assure((val & VARINT_MASK) == 0, "value overflow: %" PRIu64, val);
 
     if ((val & VARINT_MASK8) != 0)
         return 8;
@@ -66,18 +68,30 @@ uint8_t varint_size(const uint64_t val)
 }
 
 
-void enc1(uint8_t ** pos, const uint8_t * const end, const uint8_t val)
+void enc1(uint8_t ** pos,
+          const uint8_t * const end
+#ifdef NDEBUG
+          __attribute__((unused))
+#endif
+          ,
+          const uint8_t val)
 {
-    ensure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
+    assure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
            (unsigned long)(end - *pos));
     **pos = val;
     *pos += sizeof(val);
 }
 
 
-void enc2(uint8_t ** pos, const uint8_t * const end, const uint16_t val)
+void enc2(uint8_t ** pos,
+          const uint8_t * const end
+#ifdef NDEBUG
+          __attribute__((unused))
+#endif
+          ,
+          const uint16_t val)
 {
-    ensure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
+    assure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
            (unsigned long)(end - *pos));
     const uint16_t v = bswap16(val);
     memcpy(*pos, &v, sizeof(v));
@@ -85,9 +99,15 @@ void enc2(uint8_t ** pos, const uint8_t * const end, const uint16_t val)
 }
 
 
-void enc3(uint8_t ** pos, const uint8_t * const end, const uint32_t val)
+void enc3(uint8_t ** pos,
+          const uint8_t * const end
+#ifdef NDEBUG
+          __attribute__((unused))
+#endif
+          ,
+          const uint32_t val)
 {
-    ensure(*pos + 3 <= end, "buffer overflow: %lu",
+    assure(*pos + 3 <= end, "buffer overflow: %lu",
            (unsigned long)(end - *pos));
     const uint32_t v = bswap32(val << 8);
     memcpy(*pos, &v, 3);
@@ -95,9 +115,15 @@ void enc3(uint8_t ** pos, const uint8_t * const end, const uint32_t val)
 }
 
 
-void enc4(uint8_t ** pos, const uint8_t * const end, const uint32_t val)
+void enc4(uint8_t ** pos,
+          const uint8_t * const end
+#ifdef NDEBUG
+          __attribute__((unused))
+#endif
+          ,
+          const uint32_t val)
 {
-    ensure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
+    assure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
            (unsigned long)(end - *pos));
     const uint32_t v = bswap32(val);
     memcpy(*pos, &v, sizeof(v));
@@ -105,9 +131,15 @@ void enc4(uint8_t ** pos, const uint8_t * const end, const uint32_t val)
 }
 
 
-void enc8(uint8_t ** pos, const uint8_t * const end, const uint64_t val)
+void enc8(uint8_t ** pos,
+          const uint8_t * const end
+#ifdef NDEBUG
+          __attribute__((unused))
+#endif
+          ,
+          const uint64_t val)
 {
-    ensure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
+    assure(*pos + sizeof(val) <= end, "buffer overflow: %lu",
            (unsigned long)(end - *pos));
     const uint64_t v = bswap64(val);
     memcpy(*pos, &v, sizeof(v));
@@ -115,12 +147,18 @@ void enc8(uint8_t ** pos, const uint8_t * const end, const uint64_t val)
 }
 
 
-void encv(uint8_t ** pos, const uint8_t * const end, const uint64_t val)
+void encv(uint8_t ** pos,
+          const uint8_t * const end
+#ifdef NDEBUG
+          __attribute__((unused))
+#endif
+          ,
+          const uint64_t val)
 {
-    ensure((val & VARINT_MASK) == 0, "value overflow: %" PRIu64, val);
+    assure((val & VARINT_MASK) == 0, "value overflow: %" PRIu64, val);
 
     if ((val & VARINT_MASK8) != 0) {
-        ensure(*pos + 8 <= end, "buffer overflow: %lu",
+        assure(*pos + 8 <= end, "buffer overflow: %lu",
                (unsigned long)(end - *pos));
         *(*pos + 0) = ((val >> 56) & 0x3f) + 0xc0;
         *(*pos + 1) = (val >> 48) & 0xff;
@@ -135,7 +173,7 @@ void encv(uint8_t ** pos, const uint8_t * const end, const uint64_t val)
     }
 
     if ((val & VARINT_MASK4) != 0) {
-        ensure(*pos + 4 <= end, "buffer overflow: %lu",
+        assure(*pos + 4 <= end, "buffer overflow: %lu",
                (unsigned long)(end - *pos));
         *(*pos + 0) = ((val >> 24) & 0x3f) + 0x80;
         *(*pos + 1) = (val >> 16) & 0xff;
@@ -146,7 +184,7 @@ void encv(uint8_t ** pos, const uint8_t * const end, const uint64_t val)
     }
 
     if ((val & VARINT_MASK2) != 0) {
-        ensure(*pos + 2 <= end, "buffer overflow: %lu",
+        assure(*pos + 2 <= end, "buffer overflow: %lu",
                (unsigned long)(end - *pos));
         *(*pos + 0) = ((val >> 8) & 0x3f) + 0x40;
         *(*pos + 1) = val & 0xff;
@@ -154,7 +192,7 @@ void encv(uint8_t ** pos, const uint8_t * const end, const uint64_t val)
         return;
     }
 
-    ensure(*pos + 1 <= end, "buffer overflow: %lu",
+    assure(*pos + 1 <= end, "buffer overflow: %lu",
            (unsigned long)(end - *pos));
     **pos = val & 0x3f;
     *pos += 1;
@@ -167,7 +205,7 @@ void encvl(uint8_t ** pos,
            const uint8_t len)
 {
     const uint8_t len_needed = varint_size(val);
-    ensure(len_needed <= len, "value/len mismatch");
+    assure(len_needed <= len, "value/len mismatch");
 
     if (len_needed == len) {
         encv(pos, end, val);
@@ -198,11 +236,15 @@ void encvl(uint8_t ** pos,
 
 
 void encb(uint8_t ** pos,
-          const uint8_t * const end,
+          const uint8_t * const end
+#ifdef NDEBUG
+          __attribute__((unused))
+#endif
+          ,
           const uint8_t * const val,
           const uint16_t len)
 {
-    ensure(*pos + len <= end, "buffer overflow: %lu",
+    assure(*pos + len <= end, "buffer overflow: %lu",
            (unsigned long)(end - *pos));
     memcpy(*pos, val, len);
     *pos += len;

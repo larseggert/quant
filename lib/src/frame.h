@@ -30,9 +30,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <picotls.h>
 #include <quant/quant.h>
 
 #include "bitset.h"
+#include "cid.h"
+
+struct pkt_meta;
+struct pn_space;
+struct q_conn;
+struct q_stream;
 
 
 #define FRM_PAD 0x00 ///< PADDING
@@ -71,6 +78,44 @@
 
 bitset_define(frames, FRM_MAX);
 
+
+static const uint8_t max_frame_len[] = {
+    // NOTE: the type field is really a uint_t, change for extensions frames!
+    [FRM_PAD] = sizeof(uint8_t),
+    [FRM_PNG] = sizeof(uint8_t),
+    [FRM_ACK] = UINT8_MAX, // special case
+    [FRM_ACE] = UINT8_MAX, // special case
+    [FRM_RST] = UINT8_MAX, // we don't encode this
+    [FRM_STP] = UINT8_MAX, // we don't encode this
+    [FRM_CRY] = UINT8_MAX, // special case
+    [FRM_TOK] =
+        sizeof(uint8_t) + sizeof(uint_t) + PTLS_MAX_DIGEST_SIZE + CID_LEN_MAX,
+    [FRM_STR] = UINT8_MAX,    // special case
+    [FRM_STR_09] = UINT8_MAX, // special case
+    [FRM_STR_0a] = UINT8_MAX, // special case
+    [FRM_STR_0b] = UINT8_MAX, // special case
+    [FRM_STR_0c] = UINT8_MAX, // special case
+    [FRM_STR_0d] = UINT8_MAX, // special case
+    [FRM_STR_0e] = UINT8_MAX, // special case
+    [FRM_STR_0f] = UINT8_MAX, // special case
+    [FRM_MCD] = sizeof(uint8_t) + sizeof(uint_t),
+    [FRM_MSD] = sizeof(uint8_t) + sizeof(uint_t) + sizeof(uint_t),
+    [FRM_MSB] = sizeof(uint8_t) + sizeof(uint_t),
+    [FRM_MSU] = sizeof(uint8_t) + sizeof(uint_t),
+    [FRM_CDB] = sizeof(uint8_t) + sizeof(uint_t),
+    [FRM_SDB] = sizeof(uint8_t) + sizeof(uint_t) + sizeof(uint_t),
+    [FRM_SBB] = sizeof(uint8_t) + sizeof(uint_t),
+    [FRM_SBU] = sizeof(uint8_t) + sizeof(uint_t),
+    [FRM_CID] = sizeof(uint8_t) + 2 * sizeof(uint_t) + sizeof(uint8_t) +
+                CID_LEN_MAX + SRT_LEN,
+    [FRM_RTR] = sizeof(uint8_t) + sizeof(uint_t),
+    [FRM_PCL] = sizeof(uint8_t) + sizeof(uint64_t),
+    [FRM_PRP] = sizeof(uint8_t) + sizeof(uint64_t),
+    [FRM_CLQ] = UINT8_MAX, // special case
+    [FRM_CLA] = UINT8_MAX, // special case
+    [FRM_HSD] = sizeof(uint8_t)};
+
+
 #define F_STREAM_FIN 0x01
 #define F_STREAM_LEN 0x02
 #define F_STREAM_OFF 0x04
@@ -80,14 +125,6 @@ bitset_define(frames, FRM_MAX);
 
 #define has_frm(frames, type) bit_isset(FRM_MAX, (type), &(frames))
 
-struct cid;      // IWYU pragma: no_forward_declare cid
-struct pkt_meta; // IWYU pragma: no_forward_declare pkt_meta
-struct pn_space; // IWYU pragma: no_forward_declare pn_space
-struct q_conn;   // IWYU pragma: no_forward_declare q_conn
-struct q_stream; // IWYU pragma: no_forward_declare q_stream
-#ifdef NO_QINFO
-struct q_conn_info; // IWYU pragma: no_forward_declare q_conn_info
-#endif
 
 typedef enum { sdt_inv, sdt_seq, sdt_ooo, sdt_dup, sdt_ign } strm_data_type_t;
 
@@ -105,8 +142,6 @@ log_stream_or_crypto_frame(const bool is_rtx,
 
 extern bool __attribute__((nonnull))
 dec_frames(struct q_conn * const c, struct w_iov ** vv, struct pkt_meta ** mm);
-
-extern uint16_t __attribute__((const)) max_frame_len(const uint8_t type);
 
 extern void __attribute__((nonnull
 #ifdef NO_QINFO

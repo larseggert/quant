@@ -58,6 +58,7 @@
 #include "recovery.h"
 #include "stream.h"
 #include "tls.h"
+#include "tree.h"
 
 #ifndef NO_SERVER
 #include "kvec.h"
@@ -112,32 +113,54 @@ static bool __attribute__((const)) vers_supported(const uint32_t v)
 }
 
 
-static uint32_t __attribute__((nonnull))
-clnt_vneg(const uint8_t * const pos, const uint8_t * const end)
+static uint32_t __attribute__((nonnull)) clnt_vneg(struct q_conn * const c,
+                                                   const uint8_t * const pos,
+                                                   const uint8_t * const end)
 {
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
+    int off = 0;
+    uint8_t prio = UINT8_MAX;
+    uint32_t vers = 0;
     for (uint8_t i = 0; i < ok_vers_len; i++) {
         if (is_vneg_vers(ok_vers[i]))
             continue;
 
         const uint8_t * p = pos;
         while (p + sizeof(ok_vers[0]) <= end) {
-            uint32_t vers = 0;
             dec4(&vers, &p, end);
+
+            if (prio == UINT8_MAX || prio == i) {
+                if (off + 17 < (int)ped(c->w)->scratch_len)
+                    // 17 = strlen(", 0x12345678") + strlen(", ...")
+                    off += snprintf((char *)&ped(c->w)->scratch[off],
+                                    ped(c->w)->scratch_len - (size_t)off,
+                                    "%s0x%0" PRIx32,
+                                    prio == UINT8_MAX ? "" : ", ", vers);
+                else if (ped(c->w)->scratch[off - 1] != '.') {
+                    strncat((char *)&ped(c->w)->scratch[off], ", ...",
+                            ped(c->w)->scratch_len - (size_t)off);
+                    off += 5; // 5 = strlen(", ...")
+                }
+                if (prio == UINT8_MAX)
+                    prio = i;
+            }
+
             if (is_vneg_vers(vers))
                 continue;
-#ifdef DEBUG_EXTRA
-            warn(DBG,
-                 "serv prio %ld = 0x%0" PRIx32 "; our prio %u = 0x%0" PRIx32,
-                 (unsigned long)(p - pos) / sizeof(vers), vers, i, ok_vers[i]);
-#endif
             if (ok_vers[i] == vers)
-                return vers;
+                goto done;
         }
     }
 
     // we're out of matching candidates
-    warn(INF, "no vers in common with serv");
-    return 0;
+    warn(INF, "no vers in common with serv; offered %s", ped(c->w)->scratch);
+    vers = 0;
+done:
+    if (vers)
+        warn(INF, "vers 0x%0" PRIx32 " in common with serv; offered %s", vers,
+             ped(c->w)->scratch);
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
+    return vers;
 }
 
 
@@ -155,7 +178,7 @@ epoch_in(const struct q_conn * const c)
         return ep_init;
 
     const size_t epoch = ptls_get_read_epoch(c->tls.t);
-    ensure(epoch <= ep_data, "unhandled epoch %lu", (unsigned long)epoch);
+    assure(epoch <= ep_data, "unhandled epoch %lu", (unsigned long)epoch);
     return (epoch_t)epoch;
 }
 
@@ -224,17 +247,12 @@ static void __attribute__((nonnull)) log_sent_pkts(struct q_conn * const c)
         if (pn->abandoned)
             continue;
 
-        struct diet unacked = diet_initializer(unacked);
-        struct pkt_meta * m;
-        kh_foreach_value(&pn->sent_pkts, m,
-                         diet_insert(&unacked, m->hdr.nr, 0));
-
         int pos = 0;
         unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
         const uint32_t tmp_len = ped(c->w)->scratch_len;
         uint8_t * const tmp = ped(c->w)->scratch;
         struct ival * i = 0;
-        diet_foreach (i, diet, &unacked) {
+        diet_foreach (i, diet, &pn->sent_pkt_nrs) {
             if ((size_t)pos >= tmp_len) {
                 tmp[tmp_len - 2] = tmp[tmp_len - 3] = tmp[tmp_len - 4] = '.';
                 tmp[tmp_len - 1] = 0;
@@ -242,19 +260,19 @@ static void __attribute__((nonnull)) log_sent_pkts(struct q_conn * const c)
             }
 
             if (i->lo == i->hi)
-                pos += snprintf((char *)&tmp[pos], tmp_len - (size_t)pos,
-                                FMT_PNR_OUT "%s", i->lo,
-                                splay_next(diet, &unacked, i) ? ", " : "");
+                pos += snprintf(
+                    (char *)&tmp[pos], tmp_len - (size_t)pos, FMT_PNR_OUT "%s",
+                    i->lo, splay_next(diet, &pn->sent_pkt_nrs, i) ? ", " : "");
             else
                 pos += snprintf((char *)&tmp[pos], tmp_len - (size_t)pos,
                                 FMT_PNR_OUT ".." FMT_PNR_OUT "%s", i->lo, i->hi,
-                                splay_next(diet, &unacked, i) ? ", " : "");
+                                splay_next(diet, &pn->sent_pkt_nrs, i) ? ", "
+                                                                       : "");
         }
-        diet_free(&unacked);
 
         if (pos)
             warn(INF, "%s conn %s, %s unacked: %s", conn_type(c),
-                 cid_str(c->scid), pn_type_str(t), tmp);
+                 cid_str(c->scid), pn_type_str[t], tmp);
         poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     }
 }
@@ -300,9 +318,7 @@ rtx_pkt(struct w_iov * const v, struct pkt_meta * const m)
 static void do_w_tx(struct w_sock * const ws, struct w_iov_sq * const q)
 {
     w_tx(ws, q);
-    do
-        w_nic_tx(ws->w);
-    while (w_tx_pending(q));
+    w_nic_tx(ws->w);
 }
 #else
 #define do_w_tx(...)
@@ -330,7 +346,7 @@ static void __attribute__((nonnull)) tx_vneg_resp(struct w_sock * const ws,
     sq_insert_head(&q, xv, next);
 
     warn(INF, "sending vneg serv response");
-    mx->txed = 1;
+    mx->txed = true;
     mx->hdr.flags = HEAD_FORM | (uint8_t)w_rand_uniform32(UINT8_MAX);
 
     uint8_t * pos = xv->buf;
@@ -405,7 +421,7 @@ static void __attribute__((nonnull)) tx_rtry(struct q_conn * const c)
     encb(&pos, end, c->tok, c->tok_len);
     encb(&pos, end, rit, RIT_LEN);
 
-    mx->txed = 1;
+    mx->txed = true;
     mx->udp_len = xv->len = (uint16_t)(pos - xv->buf);
     xv->saddr = c->peer;
 #ifndef NO_ECN
@@ -559,6 +575,9 @@ static bool __attribute__((nonnull)) tx_stream(struct q_stream * const s)
     sq_foreach_from (v, &s->out, next) {
         struct pkt_meta * const m = &meta(v);
         if (unlikely(has_wnd(c, v->len) == false && c->tx_limit == 0)) {
+#ifdef DEBUG_EXTRA
+            warn(INF, "no more cwnd");
+#endif
             c->no_wnd = true;
             break;
         }
@@ -580,6 +599,15 @@ static bool __attribute__((nonnull)) tx_stream(struct q_stream * const s)
         if (likely(hshk_done(c) && s->id >= 0)) {
             do_stream_fc(s, v->len);
             do_conn_fc(c, v->len);
+
+            if ((likely(m->lost == false)
+                     ? s->out_data + v->len
+                     : m->strm_off + m->strm_data_len) > s->out_data_max) {
+#ifdef DEBUG_EXTRA
+                warn(INF, "no more fc wnd");
+#endif
+                break;
+            }
         }
 
         const bool do_rtx = m->lost || (c->tx_limit && m->txed);
@@ -590,9 +618,6 @@ static bool __attribute__((nonnull)) tx_stream(struct q_stream * const s)
                      false))
             continue;
         encoded++;
-
-        if (unlikely(s->blocked || c->blocked))
-            break;
 
         if (unlikely(c->tx_limit && encoded == c->tx_limit)) {
 #ifdef DEBUG_STREAMS
@@ -703,7 +728,7 @@ void conns_by_srt_ins(struct q_conn * const c, uint8_t * const srt)
 {
     int ret;
     const khiter_t k = kh_put(conns_by_srt, &conns_by_srt, srt, &ret);
-    ensure(ret >= 1, "inserted returned %d", ret);
+    assure(ret >= 1, "inserted returned %d", ret);
     kh_val(&conns_by_srt, k) = c;
 }
 
@@ -711,7 +736,7 @@ void conns_by_srt_ins(struct q_conn * const c, uint8_t * const srt)
 extern void conns_by_srt_del(uint8_t * const srt)
 {
     const khiter_t k = kh_get(conns_by_srt, &conns_by_srt, srt);
-    ensure(k != kh_end(&conns_by_srt), "found");
+    assure(k != kh_end(&conns_by_srt), "found");
     kh_del(conns_by_srt, &conns_by_srt, k);
 }
 #endif
@@ -723,7 +748,7 @@ void conns_by_id_ins(struct q_conn * const c, struct cid * const id)
     assure(id->in_cbi == false, "already in cbi");
     int ret;
     const khiter_t k = kh_put(conns_by_id, &conns_by_id, id, &ret);
-    ensure(ret >= 1, "inserted returned %d", ret);
+    assure(ret >= 1, "inserted returned %d", ret);
     kh_val(&conns_by_id, k) = c;
     id->in_cbi = true;
 }
@@ -733,7 +758,7 @@ void conns_by_id_del(struct cid * const id)
 {
     assure(id->in_cbi, "not in cbi");
     const khiter_t k = kh_get(conns_by_id, &conns_by_id, id);
-    ensure(k != kh_end(&conns_by_id), "found");
+    assure(k != kh_end(&conns_by_id), "found");
     kh_del(conns_by_id, &conns_by_id, k);
     id->in_cbi = false;
 }
@@ -946,7 +971,7 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
             goto done;
 
         // if the CH doesn't include any crypto frames, bail
-        if (has_frm(m->frms, FRM_CRY) == false) {
+        if (unlikely(has_frm(m->frms, FRM_CRY) == false)) {
             warn(ERR, "initial pkt w/o crypto frames");
             enter_closing(c);
             goto done;
@@ -960,8 +985,7 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
         if (zo) {
             warn(INF, "have reordered 0-RTT pkt for %s conn %s", conn_type(c),
                  cid_str(c->scid));
-            ensure(splay_remove(ooo_0rtt_by_cid, &ooo_0rtt_by_cid, zo),
-                   "removed");
+            splay_remove(ooo_0rtt_by_cid, &ooo_0rtt_by_cid, zo);
             sq_insert_head(x, zo->v, next);
             free(zo);
         }
@@ -1011,7 +1035,7 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
                     // the application didn't request a special version, do vneg
 
                     const uint32_t try_vers =
-                        clnt_vneg(v->buf + m->hdr.hdr_len, v->buf + v->len);
+                        clnt_vneg(c, v->buf + m->hdr.hdr_len, v->buf + v->len);
                     if (try_vers == 0) {
                         // no version in common with serv
                         enter_closing(c);
@@ -1119,13 +1143,13 @@ done:
 
 #ifndef NO_ECN
     if (likely(m->hdr.nr != UINT_T_MAX)) {
-        struct pn_space * const pn = pn_for_pkt_type(c, m->hdr.type);
         // update ECN info
-        pn->ecn_rxed[v->flags & ECN_MASK]++;
-        pn->pkts_rxed_since_last_ack_tx++;
+        m->pn->ecn_rxed[v->flags & ECN_MASK]++;
+        m->pn->pkts_rxed_since_last_ack_tx++;
 
         // TODO: if we do this, it needs to move outside of #ifndef NO_ECN
-        // if (pn == &c->pns[pn_data] && pn->pkts_rxed_since_last_ack_tx >= 16)
+        // if (m->pn == &c->pns[pn_data] &&
+        //     m->pn->pkts_rxed_since_last_ack_tx >= 16)
         //     tx_ack(c, ep_data, false);
     }
 #endif
@@ -1300,9 +1324,8 @@ static void __attribute__((nonnull))
                 ensure(zo, "could not calloc");
                 cid_cpy(&zo->cid, &m->hdr.dcid);
                 zo->v = v;
-                ensure(splay_insert(ooo_0rtt_by_cid, &ooo_0rtt_by_cid, zo) == 0,
-                       "inserted");
-                warn(INF, "caching 0-RTT pkt for unknown conn %s",
+                splay_insert(ooo_0rtt_by_cid, &ooo_0rtt_by_cid, zo);
+                warn(INF, "caching 0-RTT pkt for unknown conn %s", // NOLINT
                      cid_str(&m->hdr.dcid));
                 goto next;
             }
@@ -1451,14 +1474,13 @@ static void __attribute__((nonnull))
                                         : epoch_for_pkt_type(m->hdr.type);
 
             if (likely(has_pkt_nr(m->hdr.flags, m->hdr.vers))) {
-                struct pn_space * const pn = pn_for_pkt_type(c, m->hdr.type);
 #ifdef NO_OOO_DATA
                 if (m->strm_off == UINT_T_MAX)
                     // don't ACK this ooo packet
                     goto drop;
 #endif
-                diet_insert(&pn->recv, m->hdr.nr, m->t);
-                diet_insert(&pn->recv_all, m->hdr.nr, 0);
+                diet_insert(&m->pn->recv, m->hdr.nr, m->t);
+                diet_insert(&m->pn->recv_all, m->hdr.nr, 0);
             }
             pkt_valid = true;
 
@@ -1573,7 +1595,7 @@ void rx(struct w_sock * const ws)
             if (unlikely(c->cstrms[e] == 0 || e == ep_0rtt))
                 // don't ACK abandoned and 0rtt pn spaces
                 continue;
-            switch (needs_ack(pn_for_epoch(c, e))) {
+            switch (needs_ack(&c->pns[pn_for_epoch[e]])) {
             case imm_ack:
                 if (likely(tx_ack(c, e, false)))
                     do_tx(c);
@@ -1628,7 +1650,7 @@ void
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wformat-nonliteral"
     const int ret = vsnprintf(c->err_reason, sizeof(c->err_reason), fmt, ap);
-    ensure(ret >= 0, "vsnprintf() failed");
+    assure(ret >= 0, "vsnprintf() failed");
     va_end(ap);
 
     warn(ERR, "%s", c->err_reason);
@@ -1707,7 +1729,8 @@ void enter_closing(struct q_conn * const c)
 
     // start closing/draining alarm (3 * RTO)
     const timeout_t dur =
-        3 * (c->rec.cur.srtt == 0 ? kInitialRtt : c->rec.cur.srtt * NS_PER_US) +
+        3 * (c->rec.cur.srtt == 0 ? c->rec.initial_rtt : c->rec.cur.srtt) *
+            NS_PER_US +
         4 * c->rec.cur.rttvar * NS_PER_US;
     timeouts_add(ped(c->w)->wheel, &c->closing_alarm, dur);
 #ifdef DEBUG_TIMERS
@@ -1746,6 +1769,7 @@ static void __attribute__((nonnull)) ack_alarm(struct q_conn * const c)
 
 void update_conf(struct q_conn * const c, const struct q_conn_conf * const conf)
 {
+    c->rec.initial_rtt = get_conf(c->w, conf, initial_rtt) * US_PER_MS;
     c->spin_enabled = get_conf_uncond(c->w, conf, enable_spinbit);
     c->do_qr_test = get_conf_uncond(c->w, conf, enable_quantum_readiness_test);
 
@@ -1849,7 +1873,7 @@ struct q_conn * new_conn(struct w_engine * const w,
         c->sock = get_local_sock_by_ipnp(
             ped(w),
             &(struct w_sockaddr){.addr = w->ifaddr[idx].addr, .port = port});
-        ensure(c->sock, "got serv conn");
+        assure(c->sock, "got serv conn");
 #endif
     }
 
@@ -1957,7 +1981,7 @@ struct q_conn * new_conn(struct w_engine * const w,
     // create crypto streams
     for (epoch_t e = ep_init; e <= ep_data; e++)
         if (e != ep_0rtt)
-            new_stream(c, crpt_strm_id(e));
+            new_stream(c, crpt_strm_id[e]);
 
     if (c->scid) {
         // FIXME: first connection sets the type for all future connections

@@ -36,14 +36,12 @@
 extern "C" {
 #endif
 
-#include <picotls/openssl.h> // IWYU pragma: keep
-
 #include "cid.h"
-#include "conn.h" // IWYU pragma: keep
+#include "conn.h"
 #include "pkt.h"
-#include "pn.h" // IWYU pragma: keep
+#include "pn.h"
 #include "quic.h"
-#include "tls.h" // IWYU pragma: keep
+#include "tls.h"
 
 #ifdef __cplusplus
 }
@@ -69,7 +67,7 @@ static void BM_quic_encryption(benchmark::State & state)
     m->hdr.flags = LH | m->hdr.type;
     m->hdr.hdr_len = 16;
     m->hdr.len = len;
-    m->pn = pn_for_epoch(c, ep_init);
+    m->pn = &c->pns[pn_for_epoch[ep_init]];
 
     for (auto _ : state)
         benchmark::DoNotOptimize(enc_aead(v, m, x, pne * 16));

@@ -33,12 +33,9 @@
 #include <quant/quant.h>
 #include <timeout.h>
 
-struct pkt_meta; // IWYU pragma: no_forward_declare pkt_meta
-struct pn_space; // IWYU pragma: no_forward_declare pn_space
-struct q_conn;   // IWYU pragma: no_forward_declare q_conn
-
-// IWYU pragma: no_include "pn.h"
-// IWYU pragma: no_include "quic.h"
+struct pkt_meta;
+struct pn_space;
+struct q_conn;
 
 
 struct cc_state {
@@ -56,6 +53,8 @@ struct cc_state {
 
 
 struct recovery {
+    uint_t initial_rtt; // kInitialRtt config knob, in usec
+
     struct timeout ld_alarm; // loss_detection_timer
     timeout_t ld_alarm_val;
 

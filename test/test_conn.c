@@ -97,10 +97,19 @@ int main(int argc
     // send the data
     q_write(cs, &o, true);
 
+again:;
+    struct q_conn * c;
+    do
+        q_ready(w, 0, &c);
+    while (c != sc);
+
     // read the data
     struct w_iov_sq i = w_iov_sq_initializer(i);
     struct q_stream * const ss = q_read(sc, &i, true);
     struct w_iov * const iv = sq_first(&i);
+    if (iv == 0)
+        goto again;
+
     ensure(strncmp((char *)ov->buf, (char *)iv->buf, ov->len) == 0,
            "data mismatch");
     q_close_stream(ss);

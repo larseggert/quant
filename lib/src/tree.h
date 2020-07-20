@@ -56,7 +56,6 @@
  */
 
 #pragma once
-// IWYU pragma: private, include <quant/quant.h>
 
 /*
  * This file defines data structures for different types of trees:

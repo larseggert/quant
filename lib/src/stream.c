@@ -36,7 +36,6 @@
 #include "conn.h"
 #include "diet.h"
 #include "quic.h"
-#include "recovery.h"
 #include "stream.h"
 
 
@@ -112,7 +111,7 @@ struct q_stream * new_stream(struct q_conn * const c, const dint_t id)
     int ret;
     const khiter_t k =
         kh_put(strms_by_id, &c->strms_by_id, (khint64_t)id, &ret);
-    ensure(ret >= 1, "inserted");
+    assure(ret >= 1, "inserted");
     kh_val(&c->strms_by_id, k) = s;
 
     apply_stream_limits(s);
@@ -142,7 +141,7 @@ void free_stream(struct q_stream * const s)
         diet_insert(&c->clsd_strms, (uint_t)s->id, 0);
         const khiter_t k =
             kh_get(strms_by_id, &c->strms_by_id, (khint64_t)s->id);
-        ensure(k != kh_end(&c->strms_by_id), "found");
+        assure(k != kh_end(&c->strms_by_id), "found");
         kh_del(strms_by_id, &c->strms_by_id, k);
     } else
         s->c->cstrms[strm_epoch(s)] = 0;
@@ -150,7 +149,7 @@ void free_stream(struct q_stream * const s)
 #ifndef NO_OOO_DATA
     while (!splay_empty(&s->in_ooo)) {
         struct pkt_meta * const p = splay_min(ooo_by_off, &s->in_ooo);
-        ensure(splay_remove(ooo_by_off, &s->in_ooo, p), "removed");
+        splay_remove(ooo_by_off, &s->in_ooo, p);
         free_iov(w_iov(c->w, pm_idx(c->w, p)), p);
     }
 #endif
@@ -229,19 +228,22 @@ void do_stream_fc(struct q_stream * const s, const uint16_t len)
     sq_foreach_from (v, &s->out, next)
         if (meta(v).lost)
             actual_lost_cnt++;
-    ensure(actual_lost_cnt == s->lost_cnt,
+    assure(actual_lost_cnt == s->lost_cnt,
            "stream " FMT_SID ": actual %" PRIu " != cnt %" PRIu, s->id,
            actual_lost_cnt, s->lost_cnt);
 #endif
 
-    s->blocked = (s->out_data + len + s->c->rec.max_ups > s->out_data_max);
+    const bool blocked_orig = s->blocked;
+    s->blocked = (s->out_data + len > s->out_data_max);
 
+    const bool tx_msd_orig = s->tx_max_strm_data;
     if (s->in_data * 4 > s->in_data_max) {
         s->tx_max_strm_data = true;
         s->in_data_max *= 4;
     }
 
-    need_ctrl_update(s);
+    if (blocked_orig != s->blocked || tx_msd_orig != s->tx_max_strm_data)
+        need_ctrl_update(s);
 }
 
 

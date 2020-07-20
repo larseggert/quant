@@ -48,8 +48,8 @@
 
 #include <quant/quant.h>
 
-struct q_conn;   // IWYU pragma: no_forward_declare q_conn
-struct q_stream; // IWYU pragma: no_forward_declare q_stream
+struct q_conn;
+struct q_stream;
 
 
 #ifndef NDEBUG
@@ -69,6 +69,7 @@ static void __attribute__((noreturn)) usage(const char * const name,
                                             const char * const key,
                                             const char * const tls_log,
                                             const uint32_t timeout,
+                                            const uint32_t initial_rtt,
                                             const bool retry,
                                             const uint32_t num_bufs)
 {
@@ -90,6 +91,8 @@ static void __attribute__((noreturn)) usage(const char * const name,
     printf("\t[-v verbosity]\tverbosity level (0-%d, default %d)\n", DLEVEL,
            util_dlevel);
 #endif
+    printf("\t[-x rtt]\tinitial RTT in milliseconds (default %u)\n",
+           initial_rtt);
     exit(0);
 }
 
@@ -274,6 +277,7 @@ int main(int argc, char * argv[])
     uint16_t port[MAXPORTS] = {4433, 4434};
     size_t num_ports = 0;
     uint32_t num_bufs = 100000;
+    uint32_t initial_rtt = 500;
     int ch;
     int ret = 0;
     bool retry = false;
@@ -285,7 +289,7 @@ int main(int argc, char * argv[])
         tls_log[MAXPATHLEN - 1] = 0;
     }
 
-    while ((ch = getopt(argc, argv, "hi:p:d:v:c:k:t:b:q:rl:")) != -1) {
+    while ((ch = getopt(argc, argv, "hi:p:d:v:c:k:t:b:q:rl:x:")) != -1) {
         switch (ch) {
         case 'q':
             strncpy(qlog_dir, optarg, sizeof(qlog_dir) - 1);
@@ -312,6 +316,9 @@ int main(int argc, char * argv[])
             timeout =
                 MIN(600, (uint32_t)strtoul(optarg, 0, 10)); // 10 min = 600 sec
             break;
+        case 'x':
+            initial_rtt = MAX(1, (uint32_t)strtoul(optarg, 0, 10));
+            break;
         case 'b':
             num_bufs = (uint32_t)strtoul(optarg, 0, 10);
             break;
@@ -331,7 +338,7 @@ int main(int argc, char * argv[])
         case '?':
         default:
             usage(basename(argv[0]), ifname, qlog_dir, port[0], dir, cert, key,
-                  tls_log, timeout, retry, num_bufs);
+                  tls_log, timeout, initial_rtt, retry, num_bufs);
         }
     }
 
@@ -346,7 +353,8 @@ int main(int argc, char * argv[])
         q_init(ifname,
                &(const struct q_conf){
                    .conn_conf =
-                       &(struct q_conn_conf){.idle_timeout = timeout,
+                       &(struct q_conn_conf){.initial_rtt = initial_rtt,
+                                             .idle_timeout = timeout,
                                              .enable_spinbit = true,
                                              .enable_udp_zero_checksums = true},
                    .qlog_dir = *qlog_dir ? qlog_dir : 0,

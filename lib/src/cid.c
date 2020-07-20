@@ -31,9 +31,12 @@
 #include <quant/quant.h>
 
 #include "cid.h"
-#include "conn.h"
 #include "quic.h"
 #include "tls.h"
+
+#ifndef NO_SRT_MATCHING
+#include "conn.h"
+#endif
 
 
 char __cid_str[CID_STR_LEN];
@@ -104,7 +107,7 @@ void retire_prior_to(struct cids * const ids, const uint_t seq)
     struct cid * i;
     struct cid * tmp;
     sl_foreach_safe (i, &ids->act, next, tmp)
-        if (seq < i->seq)
+        if (i->seq < seq)
             cid_retire(ids, i);
 }
 

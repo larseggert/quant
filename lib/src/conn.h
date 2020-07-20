@@ -29,14 +29,11 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
-
-#ifndef NO_QLOG
-#include <sys/param.h>
-#endif
 
 #ifndef NO_QLOG
 #include <stdio.h>
+#include <string.h>
+#include <sys/param.h>
 #endif
 
 #include <quant/quant.h>
@@ -49,7 +46,11 @@
 #include "recovery.h"
 #include "tls.h"
 
-struct q_stream; // IWYU pragma: no_forward_declare q_stream
+#ifndef NO_OOO_0RTT
+#include "tree.h"
+#endif
+
+struct q_stream;
 
 
 KHASH_MAP_INIT_INT64(strms_by_id, struct q_stream *)
@@ -406,23 +407,6 @@ extern void __attribute__((nonnull)) rx_pkts(struct w_iov_sq * const x,
                                              struct q_conn_sl * const crx,
                                              struct w_sock * const ws);
 #endif
-
-static inline struct pn_space * __attribute__((nonnull, no_instrument_function))
-pn_for_epoch(struct q_conn * const c, const epoch_t e)
-{
-    switch (e) {
-    case ep_init:
-        return &c->pns[pn_init];
-    case ep_hshk:
-        return &c->pns[pn_hshk];
-    case ep_0rtt:
-    case ep_data:
-        return &c->pns[pn_data];
-    }
-    die("unhandled epoch %u", e);
-    return 0;
-}
-
 
 #ifndef NO_MIGRATION
 extern void __attribute__((nonnull))
