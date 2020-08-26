@@ -645,16 +645,14 @@ tx:;
     // encode the pn space id and pkt nr to identify PMTUD pkts;
     // this only works for packets numbered below 0x3fff, but that is plenty
     xv->user_data = (uint16_t)((m->pn->type << 14) | MIN(0x3fff, m->hdr.nr));
-
-#ifndef NO_MIGRATION
-    if (unlikely(c->tx_path_chlg))
-        sq_insert_tail(&c->migr_txq, xv, next);
-    else
-#endif
-        sq_insert_tail(&c->txq, xv, next);
-
     m->udp_len = xv->len;
     c->out_data += m->udp_len;
+
+    if (likely(hshk_done(c))) {
+        w_tx_iov(unlikely(has_frm(m->frms, FRM_PCL)) ? c->migr_sock : c->sock,
+                 xv);
+    } else
+        sq_insert_tail(&c->txq, xv, next);
 
     if (unlikely(m->hdr.type == LH_INIT && is_clnt(c) && m->strm_data_len))
         // adjust v->len to exclude the post-stream padding for CI

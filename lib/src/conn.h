@@ -164,7 +164,6 @@ struct q_conn {
     struct cids scids;           ///< Source CIDs.
     struct w_sockaddr migr_peer; ///< Peer's desired migration address.
     struct w_sock * migr_sock;
-    struct w_iov_sq migr_txq;
 #endif
     struct cid * dcid; ///< Active destination CID.
     struct cid * scid; ///< Active source CID.

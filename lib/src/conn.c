@@ -420,38 +420,26 @@ static void __attribute__((nonnull)) tx_rtry(struct q_conn * const c)
 #endif
 
 
-static void __attribute__((nonnull)) do_tx_txq(struct q_conn * const c,
-                                               struct w_iov_sq * const q,
-                                               struct w_sock * const ws)
+static void __attribute__((nonnull)) do_tx(struct q_conn * const c)
 {
+    struct w_iov_sq * const q = &c->txq;
 #ifndef NO_QINFO
     c->i.pkts_out += w_iov_sq_cnt(q);
 #endif
 
-    const uint16_t pmtu =
-        MIN(w_max_udp_payload(ws), (uint16_t)c->tp_peer.max_ups);
-
     if (w_iov_sq_cnt(q) > 1 && unlikely(is_lh(*sq_first(q)->buf))) {
+        const uint16_t pmtu =
+            MIN(w_max_udp_payload(c->sock), (uint16_t)c->tp_peer.max_ups);
         const bool do_pmtud =
             c->rec.max_ups == MIN_INI_LEN && pmtu > MIN_INI_LEN;
         c->pmtud_pkt =
             coalesce(q, unlikely(do_pmtud) ? pmtu : c->rec.max_ups, do_pmtud);
     }
-    do_w_tx(ws, q);
+    do_w_tx(c->sock, q);
 
     // txq was allocated from warpcore, no metadata to be freed
     w_free(q);
-}
 
-
-static void __attribute__((nonnull)) do_tx(struct q_conn * const c)
-{
-    if (likely(sq_empty(&c->txq) == false))
-        do_tx_txq(c, &c->txq, c->sock);
-#ifndef NO_MIGRATION
-    if (likely(sq_empty(&c->migr_txq) == false))
-        do_tx_txq(c, &c->migr_txq, c->migr_sock);
-#endif
     log_sent_pkts(c);
 }
 
@@ -691,11 +679,7 @@ void tx(struct q_conn * const c)
 
 done:;
     // make sure we sent enough packets when we have a TX limit
-    uint_t sent = w_iov_sq_cnt(&c->txq)
-#ifndef NO_MIGRATION
-                  + w_iov_sq_cnt(&c->migr_txq)
-#endif
-        ;
+    uint_t sent = w_iov_sq_cnt(&c->txq);
     while ((unlikely(c->tx_limit) && sent < c->tx_limit) ||
            (c->needs_tx && sent == 0)) {
         if (likely(tx_ack(c, epoch_in(c), c->tx_limit && sent < c->tx_limit)))
@@ -1875,9 +1859,6 @@ struct q_conn * new_conn(struct w_engine * const w,
     c->next_sid_bidi = is_clnt(c) ? 0 : STRM_FL_SRV;
     c->next_sid_uni = is_clnt(c) ? STRM_FL_UNI : STRM_FL_UNI | STRM_FL_SRV;
     sq_init(&c->txq);
-#ifndef NO_MIGRATION
-    sq_init(&c->migr_txq);
-#endif
 
     new_initial_cids(c, dcid, scid);
     if (c->scid == 0)
