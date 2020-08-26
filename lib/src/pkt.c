@@ -648,15 +648,14 @@ tx:;
     m->udp_len = xv->len;
     c->out_data += m->udp_len;
 
-    if (likely(hshk_done(c))) {
+    if (likely(hshk_done(c)))
         w_tx_iov(
 #ifndef NO_MIGRATION
             unlikely(has_frm(m->frms, FRM_PCL)) ? c->migr_sock :
 #endif
                                                 c->sock,
             xv);
-    } else
-        sq_insert_tail(&c->txq, xv, next);
+    sq_insert_tail(&c->txq, xv, next);
 
     if (unlikely(m->hdr.type == LH_INIT && is_clnt(c) && m->strm_data_len))
         // adjust v->len to exclude the post-stream padding for CI

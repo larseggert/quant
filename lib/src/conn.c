@@ -299,17 +299,6 @@ rtx_pkt(struct w_iov * const v, struct pkt_meta * const m)
 }
 
 
-#ifndef FUZZING
-static void do_w_tx(struct w_sock * const ws, struct w_iov_sq * const q)
-{
-    w_tx(ws, q);
-    w_nic_tx(ws->w);
-}
-#else
-#define do_w_tx(...)
-#endif
-
-
 static void __attribute__((nonnull)) tx_vneg_resp(struct w_sock * const ws,
                                                   const struct w_iov * const v,
                                                   struct pkt_meta * const m)
@@ -349,7 +338,8 @@ static void __attribute__((nonnull)) tx_vneg_resp(struct w_sock * const ws,
     xv->flags = v->flags;
     log_pkt("TX", xv, &xv->saddr, 0, 0, 0);
     // qlog_transport(pkt_tx, "default", xv, mx);
-    do_w_tx(ws, &q);
+    w_tx(ws, &q);
+    w_nic_tx(ws->w);
     q_free(&q);
 }
 
@@ -414,7 +404,8 @@ static void __attribute__((nonnull)) tx_rtry(struct q_conn * const c)
 #endif
     log_pkt("TX", xv, &xv->saddr, c->tok, c->tok_len, rit);
     // qlog_transport(pkt_tx, "default", xv, mx);
-    do_w_tx(c->sock, &q);
+    w_tx(c->sock, &q);
+    w_nic_tx(c->w);
     q_free(&q);
 }
 #endif
@@ -435,7 +426,10 @@ static void __attribute__((nonnull)) do_tx(struct q_conn * const c)
         c->pmtud_pkt =
             coalesce(q, unlikely(do_pmtud) ? pmtu : c->rec.max_ups, do_pmtud);
     }
-    do_w_tx(c->sock, q);
+
+    if (unlikely(hshk_done(c) == false))
+        w_tx(c->sock, q);
+    w_nic_tx(c->w);
 
     // txq was allocated from warpcore, no metadata to be freed
     w_free(q);
