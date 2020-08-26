@@ -649,8 +649,12 @@ tx:;
     c->out_data += m->udp_len;
 
     if (likely(hshk_done(c))) {
-        w_tx_iov(unlikely(has_frm(m->frms, FRM_PCL)) ? c->migr_sock : c->sock,
-                 xv);
+        w_tx_iov(
+#ifndef NO_MIGRATION
+            unlikely(has_frm(m->frms, FRM_PCL)) ? c->migr_sock :
+#endif
+                                                c->sock,
+            xv);
     } else
         sq_insert_tail(&c->txq, xv, next);
 
