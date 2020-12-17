@@ -1040,8 +1040,8 @@ done:;
     kh_foreach(&conns_by_id, id, c, {
         char cs[CID_STR_LEN];
         cid2str(id, cs, sizeof(cs));
-        warn(ERR, "conns_by_id has %s conn %s -> %s", conn_type(c), cs,
-             cid_str(c->scid));
+        warn(ERR, "conns_by_id has %s conn %s -> %s age %" PRIu, conn_type(c),
+             cs, cid_str(c->scid), w_now(CLOCK_MONOTONIC_RAW) - id->t);
     });
     warn(ERR, "conns_by_id size %" PRIu32, kh_size(&conns_by_id));
     return kh_size(&conns_by_id);

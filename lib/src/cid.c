@@ -27,6 +27,7 @@
 
 #include <stdio.h>
 #include <sys/param.h>
+#include <time.h>
 
 #include <quant/quant.h>
 
@@ -211,6 +212,7 @@ void mk_rand_cid(struct cid * const id,
         rand_bytes(id->id, id->len);
     }
     id->local_choice = true;
+    id->t = w_now(CLOCK_MONOTONIC_RAW);
 
 #ifndef NO_SRT_MATCHING
     id->has_srt = srt;

@@ -1889,21 +1889,21 @@ void enc_new_cid_frame(struct q_conn_info * const ci,
 
     const uint_t max_scid = max_seq(&c->scids);
     const uint_t min_scid = min_seq(&c->scids);
-    // #ifdef DEBUG_EXTRA
+#ifdef DEBUG_EXTRA
     warn(ERR, "min_scid %" PRIu " max_scid %" PRIu, min_scid, max_scid);
     warn(ERR, "max_cid_seq_out %" PRIu " -> %" PRIu, c->max_cid_seq_out,
          MAX(min_scid, c->max_cid_seq_out + 1));
-    // #endif
+#endif
     c->max_cid_seq_out = MAX(min_scid, c->max_cid_seq_out + 1);
     struct cid ncid = {.seq = c->max_cid_seq_out};
 
-    // #ifdef DEBUG_EXTRA
+#ifdef DEBUG_EXTRA
     warn(ERR, "min_scid=%" PRIu ", max_scid=%" PRIu ", max_cid_seq_out=%" PRIu,
          min_scid, max_scid, c->max_cid_seq_out);
     struct cid * id;
     sl_foreach (id, &c->scids.act, next)
         warn(ERR, "%s", cid_str(id));
-    // #endif
+#endif
 
     // FIXME: send an actual rpt
     uint_t rpt = 0;

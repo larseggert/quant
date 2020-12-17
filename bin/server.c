@@ -257,7 +257,7 @@ strm_key(struct q_conn * const c, const struct q_stream * const s)
     memcpy(buf, &sid, sizeof(uint_t));
     size_t len = sizeof(buf) - sizeof(uint_t);
     q_cid(c, &buf[sizeof(uint_t)], &len);
-    hexdump(buf, len + sizeof(uint_t));
+    // hexdump(buf, len + sizeof(uint_t));
     return fnv1a_32(buf, len + sizeof(uint_t));
 }
 
@@ -438,7 +438,7 @@ int main(int argc, char * argv[])
         if (q_is_stream_closed(s))
             goto next;
 
-        warn(ERR, "kh_get strm_key %" PRIx32, strm_key(c, s));
+        // warn(ERR, "kh_get strm_key %" PRIx32, strm_key(c, s));
         khiter_t k = kh_get(strm_cache, &sc, strm_key(c, s));
         struct w_iov_sq * sq =
             (kh_size(&sc) == 0 || k == kh_end(&sc) ? 0 : kh_val(&sc, k));
@@ -449,7 +449,7 @@ int main(int argc, char * argv[])
             ensure(sq, "calloc failed");
             sq_init(sq);
             int err;
-            warn(ERR, "kh_put strm_key %" PRIx32, strm_key(c, s));
+            // warn(ERR, "kh_put strm_key %" PRIx32, strm_key(c, s));
             k = kh_put(strm_cache, &sc, strm_key(c, s), &err);
             ensure(err >= 1, "inserted returned %d", err);
             kh_val(&sc, k) = sq;

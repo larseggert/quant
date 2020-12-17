@@ -49,6 +49,7 @@
 struct cid {
     sl_entry(cid) next;
 
+    uint_t t;   ///< Creation time.
     uint_t seq; ///< Connection ID sequence number
     /// XXX len must precede id for cid_cmp() over both to work
     uint8_t len; ///< Connection ID length
@@ -67,6 +68,7 @@ struct cid {
 #else
     uint8_t : 4;
 #endif
+
 #if HAVE_64BIT
     uint8_t _unused[2];
 #else
@@ -153,8 +155,7 @@ cid_cmp(const struct cid * const a, const struct cid * const b)
 static inline void __attribute__((nonnull))
 cid_cpy(struct cid * const dst, const struct cid * const src)
 {
-    memcpy((uint8_t *)dst + offsetof(struct cid, seq),
-           (const uint8_t *)src + offsetof(struct cid, seq),
-           sizeof(struct cid) - offsetof(struct cid, seq) -
-               sizeof(src->_unused));
+    memcpy((uint8_t *)dst + offsetof(struct cid, t),
+           (const uint8_t *)src + offsetof(struct cid, t),
+           sizeof(struct cid) - offsetof(struct cid, t) - sizeof(src->_unused));
 }
