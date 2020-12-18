@@ -732,6 +732,7 @@ done:;
     }
     if (likely(sent))
         do_tx(c);
+    // TODO: we should restart the idle timeout here per Section 10.1
     // we need to rearm LD alarm, do it here instead of in on_pkt_sent()
     set_ld_timer(c);
     log_cc(c);
@@ -1612,17 +1613,17 @@ void restart_idle_alarm(struct q_conn * const c)
                 c->tp_peer.max_idle_to ? c->tp_peer.max_idle_to : UINT64_MAX);
         const timeout_t t =
             MAX(min_of_max_idle_to * NS_PER_MS, 3 * c->rec.ld_alarm_val);
-#ifdef DEBUG_TIMERS
+// #ifdef DEBUG_TIMERS
         warn(DBG, "next idle alarm on %s conn %s in %.3f sec", conn_type(c),
              cid_str(c->scid), (double)t / NS_PER_S);
-#endif
+// #endif
         timeouts_add(ped(c->w)->wheel, &c->idle_alarm, t);
     }
-#ifdef DEBUG_TIMERS
+// #ifdef DEBUG_TIMERS
     else
         warn(DBG, "stopping idle alarm on %s conn %s", conn_type(c),
              cid_str(c->scid));
-#endif
+// #endif
 }
 
 
@@ -1657,9 +1658,7 @@ void rx(struct w_sock * const ws)
             continue;
 
         // reset idle timeout
-        if (likely(c->pns[pn_data].data.out_kyph ==
-                   c->pns[pn_data].data.in_kyph))
-            restart_idle_alarm(c);
+        restart_idle_alarm(c);
 
         // is a TX needed for this connection?
         if (c->needs_tx)

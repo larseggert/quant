@@ -324,10 +324,10 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
 #endif
                 switch (i) {
                 case FRM_CID:
-                    // #ifdef DEBUG_EXTRA
+#ifdef DEBUG_EXTRA
                     warn(ERR, "max_cid_seq_out %" PRIu " -> %" PRIu,
                          c->max_cid_seq_out, m->min_cid_seq - 1);
-                    // #endif
+#endif
                     c->max_cid_seq_out = m->min_cid_seq - 1;
                     break;
                 case FRM_CDB:
