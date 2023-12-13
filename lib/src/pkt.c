@@ -532,6 +532,8 @@ bool enc_pkt(struct q_stream * const s,
     case 3:
         enc4(&pos, end, m->hdr.nr & UINT64_C(0xffffffff));
         break;
+    default:
+        die("%d unexpected", (pnl - 1) & HEAD_PNRL_MASK);
     }
 
     m->hdr.hdr_len = (uint16_t)(pos - v->buf);
@@ -957,6 +959,8 @@ static bool undo_hp(struct w_iov * const xv,
         dec4_chk(&tmp34, &pnp, pnp + pnl);
         m->hdr.nr = tmp34;
         break;
+    default:
+        die("%d unexpected", xv->buf[0] & HEAD_PNRL_MASK);
     }
     m->hdr.hdr_len += pnl;
 

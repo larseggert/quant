@@ -353,6 +353,9 @@ bool decv(uint64_t * const val,
         *val = (**pos) & 0x3f;
         *pos += 1;
         return true;
+
+    default:
+        die("0x%02x unexpected", **pos & 0xc0);
     }
 
     return false;

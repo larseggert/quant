@@ -67,6 +67,8 @@ qlog_pkt_type_str(const uint8_t flags, const uint32_t vers)
             return "handshake";
         case LH_0RTT:
             return "zerortt";
+        default:
+            die("0x%02x unexpected", pkt_type(flags));
         }
     } else if (pkt_type(flags) == SH)
         return "onertt";

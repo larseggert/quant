@@ -44,4 +44,5 @@ set(PTLS_OPENSSL_LIBRARY
   ${CMAKE_CURRENT_BINARY_DIR}/picotls/libpicotls-openssl.a
 )
 
+set(PTLS_MINICRYPTO_LIBRARY "Y")
 add_subdirectory(picoquic EXCLUDE_FROM_ALL)

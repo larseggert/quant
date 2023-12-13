@@ -57,7 +57,7 @@ set(CMAKE_C_STANDARD 11)
 # Set general compile flags, if they are supported
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
-set (FLAGS -pipe -Wextra -Wpedantic -Weverything -Werror
+set (FLAGS -pipe -Wextra -Wpedantic -Wmost -Werror
         -fcolor-diagnostics -fdiagnostics-color=always -fstack-usage
         -Wno-disabled-macro-expansion # clang on travis needs this
         -Wno-missing-field-initializers # and this (clang-5)
@@ -217,6 +217,11 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
             -bugprone-narrowing-conversions
             -cert-err33-c
             -cert-err58-cpp
+            -misc-include-cleaner
+            -cppcoreguidelines-avoid-do-while
+            -bugprone-suspicious-realloc-usage
+            -misc-use-anonymous-namespace
+            -readability-avoid-unconditional-preprocessor-if
             -clang-diagnostic-declaration-after-statement
             -clang-diagnostic-tautological-value-range-compare
             -clang-diagnostic-deprecated-non-prototype
