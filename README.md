@@ -5,6 +5,7 @@
 [![Coverity Badge](https://scan.coverity.com/projects/13161/badge.svg)](https://scan.coverity.com/projects/ntap-quant)
 [![Language grade: C/C++](https://img.shields.io/lgtm/grade/cpp/g/NTAP/quant.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/NTAP/quant/context:cpp)
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/b01870db4e774aa2b17fc0955cf374b3)](https://www.codacy.com/manual/larseggert/quant?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=NTAP/quant&amp;utm_campaign=Badge_Grade)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Flarseggert%2Fquant.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Flarseggert%2Fquant?ref=badge_shield)
 
 Quant is a BSD-licensed C11 implementation of the emerging IETF
 [QUIC](https://quicwg.github.io/) standard for a new transport protocol over
@@ -164,3 +165,7 @@ for any use that may be made of this software.
 
 [//]: # (@example client.c)
 [//]: # (@example server.c)
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Flarseggert%2Fquant.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Flarseggert%2Fquant?ref=badge_large)
