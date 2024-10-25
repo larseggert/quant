@@ -119,8 +119,7 @@ static sl_head(stream_list, stream_entry) sl = sl_head_initializer(sl);
 static inline uint64_t __attribute__((nonnull))
 conn_cache_key(const struct sockaddr * const sock)
 {
-    const struct sockaddr_in * const sock4 =
-        (const struct sockaddr_in *)(const void *)sock;
+    const struct sockaddr_in * const sock4 = (const struct sockaddr_in *)sock;
 
     return ((uint64_t)sock4->sin_addr.s_addr
             << sizeof(sock4->sin_addr.s_addr) * 8) |

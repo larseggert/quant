@@ -233,10 +233,10 @@ struct q_conn * q_connect(struct w_engine * const w,
     uint16_t idx = UINT16_MAX;
     if (peer->sa_family == AF_INET && w->have_ip4) {
         idx = w->addr4_pos;
-        p.port = ((const struct sockaddr_in *)(const void *)peer)->sin_port;
+        p.port = ((const struct sockaddr_in *)peer)->sin_port;
     } else if (peer->sa_family == AF_INET6 && w->have_ip6) {
         const bool local_peer = IN6_IS_ADDR_LINKLOCAL(
-            &((const struct sockaddr_in6 *)(const void *)peer)->sin6_addr);
+            &((const struct sockaddr_in6 *)peer)->sin6_addr);
         for (idx = 0;
              idx < (uint16_t)(w->have_ip4 ? w->addr4_pos : w->addr_cnt); idx++)
             if (local_peer == w_is_linklocal(&w->ifaddr[idx].addr))
@@ -246,7 +246,7 @@ struct q_conn * q_connect(struct w_engine * const w,
                  local_peer ? "link-local" : "global");
             return 0;
         }
-        p.port = ((const struct sockaddr_in6 *)(const void *)peer)->sin6_port;
+        p.port = ((const struct sockaddr_in6 *)peer)->sin6_port;
     }
 
     if (unlikely(idx == UINT16_MAX || w_to_waddr(&p.addr, peer) == false)) {
@@ -1055,10 +1055,8 @@ bool q_migrate(struct q_conn * const c,
                 w_to_waddr(&c->migr_peer.addr, alt_peer);
                 c->migr_peer.port =
                     alt_peer->sa_family == AF_INET
-                        ? ((const struct sockaddr_in *)(const void *)alt_peer)
-                              ->sin_port
-                        : ((const struct sockaddr_in6 *)(const void *)alt_peer)
-                              ->sin6_port;
+                        ? ((const struct sockaddr_in *)alt_peer)->sin_port
+                        : ((const struct sockaddr_in6 *)alt_peer)->sin6_port;
             } else
                 goto fail;
         } else
@@ -1134,7 +1132,7 @@ char * hex2str(const uint8_t * const src,
     size_t i;
     for (i = 0; i < len_src && i * 2 + 1 < len_dst; i++) {
         dst[i * 2] = hex[(src[i] >> 4) & 0x0f];
-        dst[i * 2 + 1] = hex[src[i] & 0x0f];
+        dst[(i * 2) + 1] = hex[src[i] & 0x0f];
     }
 
     if (i * 2 + 1 <= len_dst)

@@ -89,7 +89,7 @@ struct cids {
 };
 
 
-#define hex_str_len(x) ((x)*2 + 1)
+#define hex_str_len(x) (((x) * 2) + 1)
 
 #define CID_STR_LEN hex_str_len(2 * sizeof(uint_t) + CID_LEN_MAX + 1)
 

@@ -88,7 +88,7 @@ earliest_pn(struct q_conn * const c, const bool by_loss_t)
     struct pn_space * pn = &c->pns[pna];
     uint64_t t = by_loss_t ? pn->loss_t : pn->last_ae_tx_t;
 
-    for (pn_t p = pna + 1; p <= pn_data; p++) {
+    for (pn_t p = pna; p <= pn_data; p++) {
         struct pn_space * const pn_p = &c->pns[p];
         const uint64_t pn_t = by_loss_t ? pn_p->loss_t : pn_p->last_ae_tx_t;
 
@@ -191,14 +191,14 @@ void set_ld_timer(struct q_conn * const c)
     timeout_t to =
         unlikely(c->rec.cur.srtt == 0)
             ? (2 * c->rec.initial_rtt) * NS_PER_US
-            : ((c->rec.cur.srtt + MAX(4 * c->rec.cur.rttvar, kGranularity)) *
-                   NS_PER_US +
-               c->tp_peer.max_ack_del * NS_PER_MS);
+            : (((c->rec.cur.srtt + MAX(4 * c->rec.cur.rttvar, kGranularity)) *
+                NS_PER_US) +
+               (c->tp_peer.max_ack_del * NS_PER_MS));
     to *= 1 << c->rec.pto_cnt;
     const uint64_t last_ae_tx_t = earliest_pn(c, false)->last_ae_tx_t;
     c->rec.ld_alarm_val = (last_ae_tx_t ? last_ae_tx_t : now) + to;
     // XXX do an RTX at least every 8 seconds (spec violation)
-    c->rec.ld_alarm_val = MIN(c->rec.ld_alarm_val, now + 8 * NS_PER_S);
+    c->rec.ld_alarm_val = MIN(c->rec.ld_alarm_val, now + (8 * NS_PER_S));
 
 set_to:;
     if (unlikely(c->rec.ld_alarm_val < now)) {

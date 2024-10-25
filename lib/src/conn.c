@@ -1819,9 +1819,9 @@ void enter_closing(struct q_conn * const c)
 
     // start closing/draining alarm (3 * RTO)
     const timeout_t dur =
-        3 * (c->rec.cur.srtt == 0 ? c->rec.initial_rtt : c->rec.cur.srtt) *
-            NS_PER_US +
-        4 * c->rec.cur.rttvar * NS_PER_US;
+        (3 * (c->rec.cur.srtt == 0 ? c->rec.initial_rtt : c->rec.cur.srtt) *
+         NS_PER_US) +
+        (4 * c->rec.cur.rttvar * NS_PER_US);
     timeouts_add(ped(c->w)->wheel, &c->closing_alarm, dur);
 #ifdef DEBUG_TIMERS
     warn(DBG, "closing/draining alarm in %.3f sec on %s conn %s",

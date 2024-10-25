@@ -842,7 +842,7 @@ void init_tp(struct q_conn * const c)
     // add a grease tp
     uint8_t grease[17];
     rand_bytes(&grease, sizeof(grease));
-    const uint64_t grease_type = UINT64_C(31) * w_rand32() + 27;
+    const uint64_t grease_type = (UINT64_C(31) * w_rand32()) + 27;
     const uint16_t grease_len = grease[0] & 0x0f;
 
     // add the quantum-readiness tp

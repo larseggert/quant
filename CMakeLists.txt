@@ -211,6 +211,12 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
         message(STATUS "Found clang-tidy: ${CLANGTIDY}")
         set(CLANG_TIDY_CHECKS *
             -altera-*
+            -bugprone-reserved-identifier
+            -cert-dcl37-c
+            -cppcoreguidelines-macro-to-enum
+            -readability-avoid-nested-conditional-operator
+            -cert-dcl51-cpp
+            -bugprone-inc-dec-in-conditions
             -bugprone-easily-swappable-parameters
             -bugprone-assignment-in-if-condition,-warnings-as-errors
             -bugprone-implicit-widening-of-multiplication-result
@@ -305,7 +311,7 @@ if(NOT CMAKE_BUILD_TYPE MATCHES Release AND HAVE_PROFILER)
 endif()
 
 # flags for "Release" builds
-set(CMAKE_C_FLAGS_RELEASE "-DNDEBUG -Ofast -march=native")
+set(CMAKE_C_FLAGS_RELEASE "-DNDEBUG -O3 -ffast-math -march=native")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
 
 # flags for "RelWithDebInfo" builds
